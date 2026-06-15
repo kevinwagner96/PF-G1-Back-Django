@@ -1,0 +1,42 @@
+[project]
+name = "pf-g1-back-django"
+version = "0.1.0"
+description = "Backend Django REST Framework para PF-G1"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "django>=5.2,<6.0",
+    "djangorestframework>=3.15.2",
+    "django-cors-headers>=4.4.0",
+    "psycopg[binary]>=3.2.1",
+    "httpx>=0.27.0",
+    "gunicorn>=22.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.2",
+    "pytest-django>=4.8.0",
+    "ruff>=0.5.6",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["config*", "accounts*", "surgeries*", "plannings*", "demo*", "health*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["*/migrations/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["tests.py", "test_*.py"]
+testpaths = ["tests"]
