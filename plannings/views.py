@@ -15,7 +15,7 @@ from accounts.permissions import (
     CREATE_PLANNING_PERMISSION,
     has_explicit_permission,
 )
-from plannings.models import Planning
+from plannings.models import Planning, PlanningAuditEvent
 from plannings.scheduler_payload import build_scheduler_payload
 from plannings.serializers import PlanningCreateSerializer, PlanningSerializer
 from surgeries.models import Intervention, MedicalStaff, OperatingRoom, Specialty, Surgery
@@ -54,6 +54,35 @@ def request_scheduler_status(scheduler_uuid: str) -> dict | None:
     return response.json()
 
 
+def get_audit_actor(user):
+    if getattr(user, "is_authenticated", False):
+        return user
+    return None
+
+
+def create_planning_audit_event(
+    *,
+    action: str,
+    source: str,
+    summary: str,
+    planning: Planning | None = None,
+    surgery: Surgery | None = None,
+    actor=None,
+    metadata: dict | None = None,
+) -> PlanningAuditEvent:
+    audit_actor = get_audit_actor(actor)
+    return PlanningAuditEvent.objects.create(
+        action=action,
+        source=source,
+        planning=planning,
+        surgery=surgery,
+        actor=audit_actor,
+        actor_email=getattr(audit_actor, "email", None),
+        summary=summary,
+        metadata=metadata or {},
+    )
+
+
 class PlanningListCreateView(APIView):
     def post(self, request):
         if not has_explicit_permission(request.user, CREATE_PLANNING_PERMISSION):
@@ -81,9 +110,32 @@ class PlanningListCreateView(APIView):
             specialties=list(Specialty.objects.filter(estado=True).order_by("nombre")),
             interventions=list(Intervention.objects.filter(estado=True).order_by("nombre")),
         )
+        create_planning_audit_event(
+            action=PlanningAuditEvent.Action.PLANNING_REQUESTED,
+            source=PlanningAuditEvent.Source.USER,
+            actor=request.user,
+            summary=f"Solicitud de planificación para la semana {week_start}",
+            metadata={
+                "week_start": week_start,
+                "pending_surgeries_count": len(pending_surgeries),
+                "operating_rooms_count": len(payload.get("operating_rooms", [])),
+                "medical_staff_count": len(payload.get("medical_staff", [])),
+            },
+        )
         try:
             scheduler_response = request_scheduler_planning(payload)
         except RuntimeError as exc:
+            create_planning_audit_event(
+                action=PlanningAuditEvent.Action.PLANNING_REQUEST_FAILED,
+                source=PlanningAuditEvent.Source.SYSTEM,
+                actor=request.user,
+                summary="Falló la solicitud de planificación al Scheduler",
+                metadata={
+                    "week_start": week_start,
+                    "error": str(exc),
+                    "pending_surgeries_count": len(pending_surgeries),
+                },
+            )
             return Response({"detail": f"Scheduler request failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
         scheduler_uuid = scheduler_response.get("uuid")
         if not scheduler_uuid:
@@ -98,6 +150,20 @@ class PlanningListCreateView(APIView):
             input_payload=payload,
             progress_percentage=scheduler_response.get("progress_percentage", 0),
             started_at=timezone.now(),
+        )
+        create_planning_audit_event(
+            action=PlanningAuditEvent.Action.PLANNING_CREATED,
+            source=PlanningAuditEvent.Source.USER,
+            planning=planning,
+            actor=request.user,
+            summary=f"Planificación creada con Scheduler UUID {planning.scheduler_uuid}",
+            metadata={
+                "scheduler_uuid": planning.scheduler_uuid,
+                "status": planning.status,
+                "week_start": week_start,
+                "progress_percentage": planning.progress_percentage,
+                "pending_surgeries_count": len(pending_surgeries),
+            },
         )
         return Response(
             {"id": planning.id, "scheduler_uuid": planning.scheduler_uuid, "status": planning.status},
@@ -129,6 +195,17 @@ class PlanningDetailView(APIView):
             return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
         if planning.status == "planning":
             return Response({"detail": "No se puede eliminar una planificación en curso"}, status=status.HTTP_409_CONFLICT)
+        create_planning_audit_event(
+            action=PlanningAuditEvent.Action.PLANNING_DELETED,
+            source=PlanningAuditEvent.Source.USER,
+            planning=planning,
+            actor=request.user,
+            summary=f"Planificación {planning.scheduler_uuid} eliminada",
+            metadata={
+                "scheduler_uuid": planning.scheduler_uuid,
+                "status": planning.status,
+            },
+        )
         planning.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -148,11 +225,23 @@ class PlanningApproveView(APIView):
             return Response({"detail": "La planificación no tiene resultado para aprobar"}, status=status.HTTP_409_CONFLICT)
 
         with transaction.atomic():
-            apply_planning_to_surgeries(planning)
+            scheduled_count = apply_planning_to_surgeries(planning, actor=request.user)
             planning.status = "approved"
             planning.approved_at = timezone.now()
             planning.approved_by = request.user.email
             planning.save()
+            create_planning_audit_event(
+                action=PlanningAuditEvent.Action.PLANNING_APPROVED,
+                source=PlanningAuditEvent.Source.USER,
+                planning=planning,
+                actor=request.user,
+                summary=f"Planificación {planning.scheduler_uuid} aprobada",
+                metadata={
+                    "scheduler_uuid": planning.scheduler_uuid,
+                    "approved_by": planning.approved_by,
+                    "scheduled_surgeries_count": scheduled_count,
+                },
+            )
         return Response(PlanningSerializer(planning).data)
 
 
@@ -177,10 +266,28 @@ class SchedulerCallbackView(APIView):
             planning.progress_percentage = 100
         planning.finished_at = timezone.now()
         planning.save()
+        callback_action = (
+            PlanningAuditEvent.Action.SCHEDULER_CALLBACK_COMPLETED
+            if planning.status == "completed"
+            else PlanningAuditEvent.Action.SCHEDULER_CALLBACK_FAILED
+        )
+        create_planning_audit_event(
+            action=callback_action,
+            source=PlanningAuditEvent.Source.SCHEDULER,
+            planning=planning,
+            summary=f"Callback del Scheduler recibido con estado {planning.status}",
+            metadata={
+                "scheduler_uuid": planning.scheduler_uuid,
+                "status": planning.status,
+                "duration_seconds": planning.duration_seconds,
+                "has_output_payload": planning.output_payload is not None,
+                "error_message": planning.error_message,
+            },
+        )
         return Response(PlanningSerializer(planning).data)
 
 
-def apply_planning_to_surgeries(planning: Planning) -> None:
+def apply_planning_to_surgeries(planning: Planning, actor=None) -> int:
     surgery_map = planning.input_payload.get("id_maps", {}).get("surgeries", {})
     room_map = planning.input_payload.get("id_maps", {}).get("operating_rooms", {})
     reverse_surgery_map = {int(value): key for key, value in surgery_map.items()}
@@ -191,6 +298,7 @@ def apply_planning_to_surgeries(planning: Planning) -> None:
         if room.get("id") == scheduler_id
     }
     week_start = date.fromisoformat(planning.input_payload["week_start"])
+    scheduled_count = 0
 
     for day_index, day in enumerate(planning.output_payload.get("dias", [])):
         current_date = week_start + timedelta(days=day_index)
@@ -200,12 +308,49 @@ def apply_planning_to_surgeries(planning: Planning) -> None:
                 surgery_id = reverse_surgery_map.get(int(item["paciente_id"]))
                 if surgery_id is None:
                     continue
-                Surgery.objects.filter(id=surgery_id).update(
-                    estado="Programada",
-                    sala_id=room_id,
-                    inicio=combine_date_and_hour(current_date, item["hora_inicio"]),
-                    fin=combine_date_and_hour(current_date, item["hora_fin"]),
+                surgery = Surgery.objects.filter(id=surgery_id).first()
+                if surgery is None:
+                    continue
+
+                previous_state = {
+                    "estado": surgery.estado,
+                    "sala_id": surgery.sala_id,
+                    "inicio": surgery.inicio.isoformat() if surgery.inicio else None,
+                    "fin": surgery.fin.isoformat() if surgery.fin else None,
+                }
+                surgery.estado = "Programada"
+                surgery.sala_id = room_id
+                surgery.inicio = combine_date_and_hour(current_date, item["hora_inicio"])
+                surgery.fin = combine_date_and_hour(current_date, item["hora_fin"])
+                surgery.save(update_fields=["estado", "sala", "inicio", "fin", "updated_at"])
+                scheduled_count += 1
+
+                create_planning_audit_event(
+                    action=PlanningAuditEvent.Action.SURGERY_SCHEDULED_FROM_PLANNING,
+                    source=PlanningAuditEvent.Source.USER,
+                    planning=planning,
+                    surgery=surgery,
+                    actor=actor,
+                    summary=f"Cirugía {surgery.id} programada desde planificación {planning.scheduler_uuid}",
+                    metadata={
+                        "scheduler_uuid": planning.scheduler_uuid,
+                        "surgery_id": surgery.id,
+                        "previous": previous_state,
+                        "new": {
+                            "estado": surgery.estado,
+                            "sala_id": surgery.sala_id,
+                            "inicio": surgery.inicio.isoformat() if surgery.inicio else None,
+                            "fin": surgery.fin.isoformat() if surgery.fin else None,
+                        },
+                        "scheduler_item": {
+                            "paciente_id": item.get("paciente_id"),
+                            "hora_inicio": item.get("hora_inicio"),
+                            "hora_fin": item.get("hora_fin"),
+                            "quirofano": block.get("quirofano"),
+                        },
+                    },
                 )
+    return scheduled_count
 
 
 def combine_date_and_hour(day: date, hour: str) -> datetime:

@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -29,3 +30,58 @@ class Planning(models.Model):
             ("can_create_planning", "Can create planning"),
             ("can_approve_planning", "Can approve planning"),
         ]
+
+
+class PlanningAuditEvent(models.Model):
+    class Action(models.TextChoices):
+        PLANNING_REQUESTED = "planning_requested", "Planning requested"
+        PLANNING_REQUEST_FAILED = "planning_request_failed", "Planning request failed"
+        PLANNING_CREATED = "planning_created", "Planning created"
+        SCHEDULER_CALLBACK_COMPLETED = (
+            "scheduler_callback_completed",
+            "Scheduler callback completed",
+        )
+        SCHEDULER_CALLBACK_FAILED = "scheduler_callback_failed", "Scheduler callback failed"
+        PLANNING_APPROVED = "planning_approved", "Planning approved"
+        PLANNING_DELETED = "planning_deleted", "Planning deleted"
+        SURGERY_SCHEDULED_FROM_PLANNING = (
+            "surgery_scheduled_from_planning",
+            "Surgery scheduled from planning",
+        )
+
+    class Source(models.TextChoices):
+        USER = "user", "User"
+        SCHEDULER = "scheduler", "Scheduler"
+        SYSTEM = "system", "System"
+
+    id = models.CharField(max_length=36, primary_key=True, default=new_uuid)
+    action = models.CharField(max_length=80, choices=Action.choices, db_index=True)
+    planning = models.ForeignKey(
+        Planning,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="audit_events",
+    )
+    surgery = models.ForeignKey(
+        "surgeries.Surgery",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="planning_audit_events",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="planning_audit_events",
+    )
+    actor_email = models.CharField(max_length=255, null=True, blank=True)
+    source = models.CharField(max_length=20, choices=Source.choices, db_index=True)
+    summary = models.CharField(max_length=500)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]

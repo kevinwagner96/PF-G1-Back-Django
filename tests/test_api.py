@@ -1,4 +1,5 @@
 import pytest
+from auditlog.models import LogEntry
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.utils import timezone
@@ -8,7 +9,7 @@ from accounts.permissions import (
     APPROVE_PLANNING_PERMISSION,
     CREATE_PLANNING_PERMISSION,
 )
-from plannings.models import Planning
+from plannings.models import Planning, PlanningAuditEvent
 from surgeries.models import Surgery
 
 pytestmark = pytest.mark.django_db
@@ -104,7 +105,14 @@ def test_create_planning_with_scheduler_mock(client, monkeypatch):
 
     assert response.status_code == 202
     assert response.json()["scheduler_uuid"] == "11111111-2222-3333-4444-555555555555"
-    assert Planning.objects.get(scheduler_uuid=response.json()["scheduler_uuid"]).status == "planning"
+    planning = Planning.objects.get(scheduler_uuid=response.json()["scheduler_uuid"])
+    assert planning.status == "planning"
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.PLANNING_CREATED,
+        planning=planning,
+        actor=user,
+    ).exists()
+    assert LogEntry.objects.filter(object_pk=planning.id).exists()
 
 
 def test_surgeon_cannot_create_planning(client, monkeypatch):
@@ -170,6 +178,42 @@ def test_valid_callback_updates_planning(client, settings):
     assert planning.status == "completed"
     assert planning.progress_percentage == 100
     assert planning.output_payload == {"dias": []}
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.SCHEDULER_CALLBACK_COMPLETED,
+        planning=planning,
+        source=PlanningAuditEvent.Source.SCHEDULER,
+    ).exists()
+
+
+def test_failed_callback_creates_failed_audit_event(client, settings):
+    planning = Planning.objects.create(
+        scheduler_uuid="22222222-aaaa-3333-4444-555555555555",
+        status="planning",
+        input_payload={"week_start": "2026-06-15"},
+        started_at=timezone.now(),
+    )
+
+    response = client.post(
+        "/api/v1/scheduler/callback/",
+        {
+            "uuid": planning.scheduler_uuid,
+            "status": "failed",
+            "error_message": "No feasible schedule",
+            "duration_seconds": 1.7,
+        },
+        content_type="application/json",
+        HTTP_X_SCHEDULER_TOKEN=settings.SCHEDULER_CALLBACK_TOKEN,
+    )
+
+    planning.refresh_from_db()
+    assert response.status_code == 200
+    assert planning.status == "failed"
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.SCHEDULER_CALLBACK_FAILED,
+        planning=planning,
+        source=PlanningAuditEvent.Source.SCHEDULER,
+        metadata__error_message="No feasible schedule",
+    ).exists()
 
 
 def test_approve_completed_planning_programs_surgery(client):
@@ -218,6 +262,18 @@ def test_approve_completed_planning_programs_surgery(client):
     assert planning.status == "approved"
     assert surgery.estado == "Programada"
     assert surgery.sala_id == room_id
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.PLANNING_APPROVED,
+        planning=planning,
+        actor=user,
+    ).exists()
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.SURGERY_SCHEDULED_FROM_PLANNING,
+        planning=planning,
+        surgery=surgery,
+        actor=user,
+    ).exists()
+    assert LogEntry.objects.filter(object_pk=surgery.id).exists()
 
 
 def test_admin_cannot_approve_completed_planning(client):
@@ -235,3 +291,30 @@ def test_admin_cannot_approve_completed_planning(client):
     planning.refresh_from_db()
     assert response.status_code == 403
     assert planning.status == "completed"
+    assert not PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.PLANNING_APPROVED,
+        planning=planning,
+    ).exists()
+
+
+def test_delete_completed_planning_creates_audit_event(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="55555555-2222-3333-4444-555555555555",
+        status="completed",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+    planning_id = planning.id
+
+    response = client.delete(f"/api/v1/plannings/{planning.scheduler_uuid}/")
+
+    assert response.status_code == 204
+    assert not Planning.objects.filter(id=planning_id).exists()
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.PLANNING_DELETED,
+        planning__isnull=True,
+        actor=user,
+        metadata__scheduler_uuid="55555555-2222-3333-4444-555555555555",
+    ).exists()
