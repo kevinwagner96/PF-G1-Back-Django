@@ -13,5 +13,8 @@ class User(AbstractUser):
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username", "nombre"]
 
+    class Meta:
+        permissions = [("can_access_system_admin", "Can access system admin")]
+
     def __str__(self) -> str:
         return self.email

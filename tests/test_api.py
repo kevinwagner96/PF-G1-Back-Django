@@ -3,7 +3,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.utils import timezone
 
-from accounts.permissions import APPROVE_PLANNING_PERMISSION, CREATE_PLANNING_PERMISSION
+from accounts.permissions import (
+    ACCESS_SYSTEM_ADMIN_PERMISSION,
+    APPROVE_PLANNING_PERMISSION,
+    CREATE_PLANNING_PERMISSION,
+)
 from plannings.models import Planning
 from surgeries.models import Surgery
 
@@ -20,21 +24,35 @@ def test_login_and_me(client):
 
 
 def test_demo_seed_creates_groups_and_user_permissions(client):
+    sysadmin = get_user_model().objects.get(email="sysadmin@hospital.com")
     admin = get_user_model().objects.get(email="admin@hospital.com")
     surgeon = get_user_model().objects.get(email="cirujano@hospital.com")
 
+    assert Group.objects.filter(name="System Admin", user=sysadmin).exists()
     assert Group.objects.filter(name="Administrador", user=admin).exists()
     assert Group.objects.filter(name="Cirujano", user=surgeon).exists()
+    assert sysadmin.is_staff is True
+    assert sysadmin.is_superuser is True
+    assert admin.is_staff is False
+    assert admin.is_superuser is False
+
+    client.force_login(sysadmin)
+    sysadmin_permissions = client.get("/api/v1/auth/me/").json()["user"]["permissions"]
+    assert ACCESS_SYSTEM_ADMIN_PERMISSION in sysadmin_permissions
+    assert CREATE_PLANNING_PERMISSION not in sysadmin_permissions
+    assert APPROVE_PLANNING_PERMISSION not in sysadmin_permissions
 
     client.force_login(admin)
     admin_permissions = client.get("/api/v1/auth/me/").json()["user"]["permissions"]
     assert CREATE_PLANNING_PERMISSION in admin_permissions
     assert APPROVE_PLANNING_PERMISSION not in admin_permissions
+    assert ACCESS_SYSTEM_ADMIN_PERMISSION not in admin_permissions
 
     client.force_login(surgeon)
     surgeon_permissions = client.get("/api/v1/auth/me/").json()["user"]["permissions"]
     assert APPROVE_PLANNING_PERMISSION in surgeon_permissions
     assert CREATE_PLANNING_PERMISSION not in surgeon_permissions
+    assert ACCESS_SYSTEM_ADMIN_PERMISSION not in surgeon_permissions
 
 
 def test_callback_rejects_bad_token(client):

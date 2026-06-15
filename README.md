@@ -29,6 +29,7 @@ Usuarios:
 
 | Rol | Email | Password |
 | --- | --- | --- |
+| System Admin | sysadmin@hospital.com | sysadmin123 |
 | Administrador | admin@hospital.com | admin123 |
 | Cirujano | cirujano@hospital.com | cirujano123 |
 | Jefe Quirofano | jefe@hospital.com | jefe123 |
@@ -38,10 +39,11 @@ El Front debe usar `NEXT_PUBLIC_API_BASE_URL=http://localhost:3010/api/v1` para 
 
 ## Django Admin y roles
 
-El admin se accede en `http://127.0.0.1:3010/admin/` con `admin@hospital.com / admin123`.
+El admin se accede en `http://127.0.0.1:3010/admin/` con `sysadmin@hospital.com / sysadmin123`.
 
 La demo usa grupos y permisos Django:
 
+- `System Admin`: acceso técnico a Django Admin.
 - `Administrador`: puede generar planificaciones.
 - `Cirujano`: puede aprobar planificaciones completadas.
 - `Jefe Quirofano` y `Recepcionista`: sin permisos de planificación por defecto.

@@ -26,7 +26,7 @@ DJANGO_DEBUG=true .venv/bin/python manage.py runserver 127.0.0.1:3010
 ## Validación local del Django Admin
 
 - Para validar `/admin/` fuera de Docker, levantar con `DJANGO_DEBUG=true`; si no, el admin puede verse como texto plano porque `runserver` no sirve estáticos con `DEBUG=false`.
-- Abrir `http://127.0.0.1:3010/admin/` e ingresar con `admin@hospital.com / admin123`.
+- Abrir `http://127.0.0.1:3010/admin/` e ingresar con `sysadmin@hospital.com / sysadmin123`.
 - Si el admin carga sin CSS/JS, revisar primero que el proceso se haya levantado con `DJANGO_DEBUG=true`.
 - En Docker/Gunicorn con `DJANGO_DEBUG=false`, si el admin aparece en texto plano, falta configurar `collectstatic` y servir `/static/`.
 
@@ -34,6 +34,7 @@ DJANGO_DEBUG=true .venv/bin/python manage.py runserver 127.0.0.1:3010
 
 - El Front nunca llama al Scheduler.
 - La autorización funcional usa permisos explícitos por grupo, no el texto de `User.rol`.
+- `System Admin` es técnico y entra a Django Admin; `Administrador` es funcional y genera planificaciones desde el Front.
 - `POST /api/v1/plannings/` crea una planificación y llama a `pf-or-scheduler`.
 - `GET /api/v1/plannings/{scheduler_uuid}/` devuelve estado persistido y sincroniza progreso si sigue planificando.
 - `POST /api/v1/scheduler/callback/` recibe el resultado completo del Scheduler y valida `X-Scheduler-Token`.

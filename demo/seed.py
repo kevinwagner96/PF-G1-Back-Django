@@ -2,7 +2,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.db import transaction
 
-from accounts.permissions import APPROVE_PLANNING_PERMISSION, CREATE_PLANNING_PERMISSION
+from accounts.permissions import (
+    ACCESS_SYSTEM_ADMIN_PERMISSION,
+    APPROVE_PLANNING_PERMISSION,
+    CREATE_PLANNING_PERMISSION,
+)
 from plannings.models import Planning
 from surgeries.models import (
     AnesthesiaType,
@@ -40,6 +44,7 @@ PATIENT_NAMES = [
 
 
 DEMO_GROUPS = {
+    "System Admin": [ACCESS_SYSTEM_ADMIN_PERMISSION],
     "Administrador": [CREATE_PLANNING_PERMISSION],
     "Cirujano": [APPROVE_PLANNING_PERMISSION],
     "Jefe Quirofano": [],
@@ -51,8 +56,12 @@ def sync_demo_groups_and_permissions() -> None:
     permissions_by_name = {
         f"{permission.content_type.app_label}.{permission.codename}": permission
         for permission in Permission.objects.filter(
-            content_type__app_label="plannings",
-            codename__in=["can_create_planning", "can_approve_planning"],
+            content_type__app_label__in=["accounts", "plannings"],
+            codename__in=[
+                "can_access_system_admin",
+                "can_create_planning",
+                "can_approve_planning",
+            ],
         ).select_related("content_type")
     }
     for group_name, permission_names in DEMO_GROUPS.items():
@@ -69,7 +78,8 @@ def seed_demo_data() -> None:
     with transaction.atomic():
         sync_demo_groups_and_permissions()
         demo_users = [
-            ("admin@hospital.com", "admin123", {"username": "admin@hospital.com", "nombre": "Dr. Garcia", "rol": "Administrador", "requiere_cambio_password": False, "bloqueado": False, "is_staff": True, "is_superuser": True}),
+            ("sysadmin@hospital.com", "sysadmin123", {"username": "sysadmin@hospital.com", "nombre": "System Admin", "rol": "System Admin", "requiere_cambio_password": False, "bloqueado": False, "is_staff": True, "is_superuser": True}),
+            ("admin@hospital.com", "admin123", {"username": "admin@hospital.com", "nombre": "Dr. Garcia", "rol": "Administrador", "requiere_cambio_password": False, "bloqueado": False, "is_staff": False, "is_superuser": False}),
             ("cirujano@hospital.com", "cirujano123", {"username": "cirujano@hospital.com", "nombre": "Dr. Lopez", "rol": "Cirujano", "requiere_cambio_password": False, "bloqueado": False, "personal_id": STAFF_1}),
             ("jefe@hospital.com", "jefe123", {"username": "jefe@hospital.com", "nombre": "Dra. Martinez", "rol": "Jefe Quirofano", "requiere_cambio_password": False, "bloqueado": False}),
             ("recepcion@hospital.com", "recepcion123", {"username": "recepcion@hospital.com", "nombre": "Maria Sanchez", "rol": "Recepcionista", "requiere_cambio_password": False, "bloqueado": False}),

@@ -2,6 +2,7 @@ from django.contrib.auth.models import AnonymousUser
 
 CREATE_PLANNING_PERMISSION = "plannings.can_create_planning"
 APPROVE_PLANNING_PERMISSION = "plannings.can_approve_planning"
+ACCESS_SYSTEM_ADMIN_PERMISSION = "accounts.can_access_system_admin"
 
 
 def get_explicit_permissions(user) -> list[str]:
