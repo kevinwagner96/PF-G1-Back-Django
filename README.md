@@ -35,3 +35,13 @@ Usuarios:
 | Recepcionista | recepcion@hospital.com | recepcion123 |
 
 El Front debe usar `NEXT_PUBLIC_API_BASE_URL=http://localhost:3010/api/v1` para compartir cookies de sesión con Django.
+
+## Django Admin y roles
+
+El admin se accede en `http://127.0.0.1:3010/admin/` con `admin@hospital.com / admin123`.
+
+La demo usa grupos y permisos Django:
+
+- `Administrador`: puede generar planificaciones.
+- `Cirujano`: puede aprobar planificaciones completadas.
+- `Jefe Quirofano` y `Recepcionista`: sin permisos de planificación por defecto.

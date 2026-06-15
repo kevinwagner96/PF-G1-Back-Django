@@ -25,3 +25,7 @@ class Planning(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        permissions = [
+            ("can_create_planning", "Can create planning"),
+            ("can_approve_planning", "Can approve planning"),
+        ]

@@ -26,6 +26,7 @@ Backend actual de PF-G1 creado desde cero con Django REST Framework. Este proyec
 ## Flujo principal
 
 - El Front nunca llama al Scheduler.
+- La autorización funcional usa permisos explícitos por grupo, no el texto de `User.rol`.
 - `POST /api/v1/plannings/` crea una planificación y llama a `pf-or-scheduler`.
 - `GET /api/v1/plannings/{scheduler_uuid}/` devuelve estado persistido y sincroniza progreso si sigue planificando.
 - `POST /api/v1/scheduler/callback/` recibe el resultado completo del Scheduler y valida `X-Scheduler-Token`.
@@ -36,6 +37,7 @@ Backend actual de PF-G1 creado desde cero con Django REST Framework. Este proyec
 
 - Usar migraciones Django, no scripts SQL sueltos ni Alembic.
 - Mantener autenticación por sesión Django, cookies y CSRF.
+- Gestionar roles demo con `Group` y `Permission` desde Django Admin.
 - Proteger el callback con `X-Scheduler-Token`.
 - No convertir cirugías a `Programada` salvo por aprobación explícita.
 - Mantener payloads JSON completos en `Planning.input_payload` y `Planning.output_payload` para auditoría.

@@ -10,6 +10,11 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import (
+    APPROVE_PLANNING_PERMISSION,
+    CREATE_PLANNING_PERMISSION,
+    has_explicit_permission,
+)
 from plannings.models import Planning
 from plannings.scheduler_payload import build_scheduler_payload
 from plannings.serializers import PlanningCreateSerializer, PlanningSerializer
@@ -51,6 +56,9 @@ def request_scheduler_status(scheduler_uuid: str) -> dict | None:
 
 class PlanningListCreateView(APIView):
     def post(self, request):
+        if not has_explicit_permission(request.user, CREATE_PLANNING_PERMISSION):
+            return Response({"detail": "No tiene permiso para generar planificaciones"}, status=status.HTTP_403_FORBIDDEN)
+
         serializer = PlanningCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         week_start = serializer.validated_data["week_start"].isoformat()
@@ -127,8 +135,8 @@ class PlanningDetailView(APIView):
 
 class PlanningApproveView(APIView):
     def post(self, request, scheduler_uuid: str):
-        if getattr(request.user, "rol", None) != "Cirujano":
-            return Response({"detail": "Sólo un usuario Cirujano puede aprobar la planificación"}, status=status.HTTP_403_FORBIDDEN)
+        if not has_explicit_permission(request.user, APPROVE_PLANNING_PERMISSION):
+            return Response({"detail": "No tiene permiso para aprobar planificaciones"}, status=status.HTTP_403_FORBIDDEN)
         planning = planning_queryset().filter(scheduler_uuid=scheduler_uuid).first()
         if planning is None:
             return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)

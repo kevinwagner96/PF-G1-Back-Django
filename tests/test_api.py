@@ -1,7 +1,9 @@
 import pytest
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import Group
 from django.utils import timezone
 
+from accounts.permissions import APPROVE_PLANNING_PERMISSION, CREATE_PLANNING_PERMISSION
 from plannings.models import Planning
 from surgeries.models import Surgery
 
@@ -15,6 +17,24 @@ def test_login_and_me(client):
     assert response.status_code == 200
     assert response.json()["user"]["email"] == user.email
     assert client.get("/api/v1/auth/me/").status_code == 200
+
+
+def test_demo_seed_creates_groups_and_user_permissions(client):
+    admin = get_user_model().objects.get(email="admin@hospital.com")
+    surgeon = get_user_model().objects.get(email="cirujano@hospital.com")
+
+    assert Group.objects.filter(name="Administrador", user=admin).exists()
+    assert Group.objects.filter(name="Cirujano", user=surgeon).exists()
+
+    client.force_login(admin)
+    admin_permissions = client.get("/api/v1/auth/me/").json()["user"]["permissions"]
+    assert CREATE_PLANNING_PERMISSION in admin_permissions
+    assert APPROVE_PLANNING_PERMISSION not in admin_permissions
+
+    client.force_login(surgeon)
+    surgeon_permissions = client.get("/api/v1/auth/me/").json()["user"]["permissions"]
+    assert APPROVE_PLANNING_PERMISSION in surgeon_permissions
+    assert CREATE_PLANNING_PERMISSION not in surgeon_permissions
 
 
 def test_callback_rejects_bad_token(client):
@@ -67,6 +87,22 @@ def test_create_planning_with_scheduler_mock(client, monkeypatch):
     assert response.status_code == 202
     assert response.json()["scheduler_uuid"] == "11111111-2222-3333-4444-555555555555"
     assert Planning.objects.get(scheduler_uuid=response.json()["scheduler_uuid"]).status == "planning"
+
+
+def test_surgeon_cannot_create_planning(client, monkeypatch):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+
+    monkeypatch.setattr("plannings.views.request_scheduler_planning", lambda payload: pytest.fail("Scheduler should not be called"))
+
+    response = client.post(
+        "/api/v1/plannings/",
+        {"week_start": "2026-06-15"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 403
+    assert Planning.objects.count() == 0
 
 
 def test_create_planning_returns_clear_error_when_scheduler_response_has_no_uuid(
@@ -164,3 +200,20 @@ def test_approve_completed_planning_programs_surgery(client):
     assert planning.status == "approved"
     assert surgery.estado == "Programada"
     assert surgery.sala_id == room_id
+
+
+def test_admin_cannot_approve_completed_planning(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="44444444-2222-3333-4444-555555555555",
+        status="completed",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.post(f"/api/v1/plannings/{planning.scheduler_uuid}/approve/")
+
+    planning.refresh_from_db()
+    assert response.status_code == 403
+    assert planning.status == "completed"
