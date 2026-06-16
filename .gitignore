@@ -7,3 +7,4 @@ __pycache__/
 *.egg-info/
 db.sqlite3
 .DS_Store
+proyecto-final-doc.md

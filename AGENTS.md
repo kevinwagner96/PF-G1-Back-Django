@@ -37,9 +37,12 @@ DJANGO_DEBUG=true .venv/bin/python manage.py runserver 127.0.0.1:3010
 - `System Admin` es técnico y entra a Django Admin; `Administrador` es funcional y genera planificaciones desde el Front.
 - `POST /api/v1/plannings/` crea una planificación y llama a `pf-or-scheduler`.
 - `GET /api/v1/plannings/{scheduler_uuid}/` devuelve estado persistido y sincroniza progreso si sigue planificando.
-- `POST /api/v1/scheduler/callback/` recibe el resultado completo del Scheduler y valida `X-Scheduler-Token`.
-- `POST /api/v1/plannings/{scheduler_uuid}/approve/` marca cirugías como `Programada` sólo si el usuario tiene `plannings.can_approve_planning`.
-- `POST /api/v1/demo/reset/` borra planificaciones y devuelve cirugías demo a `Pendiente`.
+- `GET /api/v1/plannings/active/` devuelve la planificación activa más reciente en `planning` o `pending_approval`.
+- `POST /api/v1/scheduler/callback/` recibe el resultado completo del Scheduler y valida `X-Scheduler-Token`; si llega `completed`, se guarda como `pending_approval` para revisión humana.
+- `POST /api/v1/plannings/{scheduler_uuid}/approve/` marca cirugías como `Programada` sólo si la planificación está en `pending_approval` y el usuario tiene `plannings.can_approve_planning`.
+- `POST /api/v1/plannings/{scheduler_uuid}/reject/` rechaza una planificación pendiente con motivo obligatorio y no modifica cirugías.
+- `GET /api/v1/reports/summary/` calcula reportes en tiempo real desde las tablas, sin mocks ni agregados persistidos.
+- `POST /api/v1/demo/reset/` borra planificaciones, devuelve cirugías demo a `Pendiente` y conserva datos demo suficientes para reportes.
 
 ## Reglas para agentes
 
@@ -49,4 +52,5 @@ DJANGO_DEBUG=true .venv/bin/python manage.py runserver 127.0.0.1:3010
 - Proteger el callback con `X-Scheduler-Token`.
 - No convertir cirugías a `Programada` salvo por aprobación explícita.
 - Mantener payloads JSON completos en `Planning.input_payload` y `Planning.output_payload` para auditoría.
+- Mantener reportes MVP acotados a tres indicadores: utilización de quirófanos, tasa de cancelación y tiempo promedio de espera.
 - Mantener sólo endpoints Django canónicos con slash final; no reintroducir aliases legacy.
