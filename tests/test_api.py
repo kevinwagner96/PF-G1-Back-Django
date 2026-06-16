@@ -175,11 +175,11 @@ def test_valid_callback_updates_planning(client, settings):
 
     planning.refresh_from_db()
     assert response.status_code == 200
-    assert planning.status == "completed"
+    assert planning.status == "pending_approval"
     assert planning.progress_percentage == 100
     assert planning.output_payload == {"dias": []}
     assert PlanningAuditEvent.objects.filter(
-        action=PlanningAuditEvent.Action.SCHEDULER_CALLBACK_COMPLETED,
+        action=PlanningAuditEvent.Action.PLANNING_PENDING_APPROVAL,
         planning=planning,
         source=PlanningAuditEvent.Source.SCHEDULER,
     ).exists()
@@ -223,7 +223,7 @@ def test_approve_completed_planning_programs_surgery(client):
     room_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
     planning = Planning.objects.create(
         scheduler_uuid="33333333-2222-3333-4444-555555555555",
-        status="completed",
+        status="pending_approval",
         input_payload={
             "week_start": "2026-06-15",
             "operating_rooms": [{"id": 1, "name": "Quirófano 1"}],
@@ -276,12 +276,12 @@ def test_approve_completed_planning_programs_surgery(client):
     assert LogEntry.objects.filter(object_pk=surgery.id).exists()
 
 
-def test_admin_cannot_approve_completed_planning(client):
+def test_admin_cannot_approve_pending_planning(client):
     user = get_user_model().objects.get(email="admin@hospital.com")
     client.force_login(user)
     planning = Planning.objects.create(
         scheduler_uuid="44444444-2222-3333-4444-555555555555",
-        status="completed",
+        status="pending_approval",
         input_payload={"week_start": "2026-06-15"},
         output_payload={"dias": []},
     )
@@ -290,11 +290,165 @@ def test_admin_cannot_approve_completed_planning(client):
 
     planning.refresh_from_db()
     assert response.status_code == 403
-    assert planning.status == "completed"
+    assert planning.status == "pending_approval"
     assert not PlanningAuditEvent.objects.filter(
         action=PlanningAuditEvent.Action.PLANNING_APPROVED,
         planning=planning,
     ).exists()
+
+
+def test_reject_pending_planning_with_reason_does_not_program_surgeries(client):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+    surgery_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01"
+    planning = Planning.objects.create(
+        scheduler_uuid="66666666-2222-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={
+            "week_start": "2026-06-15",
+            "operating_rooms": [{"id": 1, "name": "Quirófano 1"}],
+            "id_maps": {
+                "surgeries": {surgery_id: 1},
+                "operating_rooms": {"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1": 1},
+            },
+        },
+        output_payload={
+            "dias": [
+                {
+                    "nombre": "Lunes",
+                    "bloques": [
+                        {
+                            "quirofano": "Quirófano 1",
+                            "turno": "Mañana",
+                            "cronograma": [
+                                {
+                                    "paciente_id": 1,
+                                    "hora_inicio": "08:00",
+                                    "hora_fin": "10:00",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+    response = client.post(
+        f"/api/v1/plannings/{planning.scheduler_uuid}/reject/",
+        {"reason": "Necesita revisión de disponibilidad"},
+        content_type="application/json",
+    )
+
+    planning.refresh_from_db()
+    surgery = Surgery.objects.get(id=surgery_id)
+    assert response.status_code == 200
+    assert planning.status == "rejected"
+    assert planning.rejected_by == user.email
+    assert planning.rejection_reason == "Necesita revisión de disponibilidad"
+    assert surgery.estado == "Pendiente"
+    assert surgery.inicio is None
+    assert PlanningAuditEvent.objects.filter(
+        action=PlanningAuditEvent.Action.PLANNING_REJECTED,
+        planning=planning,
+        actor=user,
+        metadata__reason="Necesita revisión de disponibilidad",
+    ).exists()
+
+
+def test_reject_pending_planning_requires_reason(client):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="77777777-2222-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.post(
+        f"/api/v1/plannings/{planning.scheduler_uuid}/reject/",
+        {"reason": ""},
+        content_type="application/json",
+    )
+
+    planning.refresh_from_db()
+    assert response.status_code == 400
+    assert planning.status == "pending_approval"
+
+
+def test_admin_cannot_reject_pending_planning(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="88888888-2222-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.post(
+        f"/api/v1/plannings/{planning.scheduler_uuid}/reject/",
+        {"reason": "No corresponde"},
+        content_type="application/json",
+    )
+
+    planning.refresh_from_db()
+    assert response.status_code == 403
+    assert planning.status == "pending_approval"
+
+
+def test_active_planning_returns_latest_active_planning(client):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+    Planning.objects.create(
+        scheduler_uuid="99999999-1111-3333-4444-555555555555",
+        status="approved",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+    active = Planning.objects.create(
+        scheduler_uuid="99999999-2222-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.get("/api/v1/plannings/active/")
+
+    assert response.status_code == 200
+    assert response.json()["scheduler_uuid"] == active.scheduler_uuid
+
+
+def test_active_planning_returns_404_when_no_active_planning(client):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+    Planning.objects.create(
+        scheduler_uuid="99999999-3333-3333-4444-555555555555",
+        status="rejected",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.get("/api/v1/plannings/active/")
+
+    assert response.status_code == 404
+
+
+def test_surgeon_cannot_delete_pending_planning(client):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="99999999-4444-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.delete(f"/api/v1/plannings/{planning.scheduler_uuid}/")
+
+    assert response.status_code == 403
+    assert Planning.objects.filter(id=planning.id).exists()
 
 
 def test_delete_completed_planning_creates_audit_event(client):

@@ -9,6 +9,13 @@ def new_uuid() -> str:
 
 
 class Planning(models.Model):
+    STATUS_PLANNING = "planning"
+    STATUS_PENDING_APPROVAL = "pending_approval"
+    STATUS_FAILED = "failed"
+    STATUS_APPROVED = "approved"
+    STATUS_REJECTED = "rejected"
+    ACTIVE_STATUSES = [STATUS_PLANNING, STATUS_PENDING_APPROVAL]
+
     id = models.CharField(max_length=36, primary_key=True, default=new_uuid)
     scheduler_uuid = models.CharField(max_length=36, unique=True, db_index=True)
     status = models.CharField(max_length=40, db_index=True)
@@ -21,6 +28,9 @@ class Planning(models.Model):
     duration_seconds = models.FloatField(null=True, blank=True)
     approved_at = models.DateTimeField(null=True, blank=True)
     approved_by = models.CharField(max_length=255, null=True, blank=True)
+    rejected_at = models.DateTimeField(null=True, blank=True)
+    rejected_by = models.CharField(max_length=255, null=True, blank=True)
+    rejection_reason = models.TextField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -42,7 +52,9 @@ class PlanningAuditEvent(models.Model):
             "Scheduler callback completed",
         )
         SCHEDULER_CALLBACK_FAILED = "scheduler_callback_failed", "Scheduler callback failed"
+        PLANNING_PENDING_APPROVAL = "planning_pending_approval", "Planning pending approval"
         PLANNING_APPROVED = "planning_approved", "Planning approved"
+        PLANNING_REJECTED = "planning_rejected", "Planning rejected"
         PLANNING_DELETED = "planning_deleted", "Planning deleted"
         SURGERY_SCHEDULED_FROM_PLANNING = (
             "surgery_scheduled_from_planning",

@@ -17,7 +17,11 @@ from accounts.permissions import (
 )
 from plannings.models import Planning, PlanningAuditEvent
 from plannings.scheduler_payload import build_scheduler_payload
-from plannings.serializers import PlanningCreateSerializer, PlanningSerializer
+from plannings.serializers import (
+    PlanningCreateSerializer,
+    PlanningRejectSerializer,
+    PlanningSerializer,
+)
 from surgeries.models import Intervention, MedicalStaff, OperatingRoom, Specialty, Surgery
 
 
@@ -146,7 +150,7 @@ class PlanningListCreateView(APIView):
 
         planning = Planning.objects.create(
             scheduler_uuid=scheduler_uuid,
-            status=scheduler_response.get("status", "planning"),
+            status=scheduler_response.get("status", Planning.STATUS_PLANNING),
             input_payload=payload,
             progress_percentage=scheduler_response.get("progress_percentage", 0),
             started_at=timezone.now(),
@@ -171,6 +175,14 @@ class PlanningListCreateView(APIView):
         )
 
 
+class ActivePlanningView(APIView):
+    def get(self, request):
+        planning = planning_queryset().filter(status__in=Planning.ACTIVE_STATUSES).first()
+        if planning is None:
+            return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(PlanningSerializer(planning).data)
+
+
 class PlanningDetailView(APIView):
     def get_object(self, scheduler_uuid: str) -> Planning | None:
         return planning_queryset().filter(scheduler_uuid=scheduler_uuid).first()
@@ -190,10 +202,12 @@ class PlanningDetailView(APIView):
         return Response(PlanningSerializer(planning).data)
 
     def delete(self, request, scheduler_uuid: str):
+        if not has_explicit_permission(request.user, CREATE_PLANNING_PERMISSION):
+            return Response({"detail": "No tiene permiso para eliminar planificaciones"}, status=status.HTTP_403_FORBIDDEN)
         planning = self.get_object(scheduler_uuid)
         if planning is None:
             return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
-        if planning.status == "planning":
+        if planning.status in Planning.ACTIVE_STATUSES:
             return Response({"detail": "No se puede eliminar una planificación en curso"}, status=status.HTTP_409_CONFLICT)
         create_planning_audit_event(
             action=PlanningAuditEvent.Action.PLANNING_DELETED,
@@ -217,16 +231,18 @@ class PlanningApproveView(APIView):
         planning = planning_queryset().filter(scheduler_uuid=scheduler_uuid).first()
         if planning is None:
             return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
-        if planning.status == "approved":
+        if planning.status == Planning.STATUS_APPROVED:
             return Response({"detail": "La planificación ya fue aprobada"}, status=status.HTTP_409_CONFLICT)
-        if planning.status != "completed":
-            return Response({"detail": "Sólo se puede aprobar una planificación completada"}, status=status.HTTP_409_CONFLICT)
+        if planning.status == Planning.STATUS_REJECTED:
+            return Response({"detail": "La planificación ya fue rechazada"}, status=status.HTTP_409_CONFLICT)
+        if planning.status != Planning.STATUS_PENDING_APPROVAL:
+            return Response({"detail": "Sólo se puede aprobar una planificación pendiente de aprobación"}, status=status.HTTP_409_CONFLICT)
         if not planning.output_payload:
             return Response({"detail": "La planificación no tiene resultado para aprobar"}, status=status.HTTP_409_CONFLICT)
 
         with transaction.atomic():
             scheduled_count = apply_planning_to_surgeries(planning, actor=request.user)
-            planning.status = "approved"
+            planning.status = Planning.STATUS_APPROVED
             planning.approved_at = timezone.now()
             planning.approved_by = request.user.email
             planning.save()
@@ -245,6 +261,48 @@ class PlanningApproveView(APIView):
         return Response(PlanningSerializer(planning).data)
 
 
+class PlanningRejectView(APIView):
+    def post(self, request, scheduler_uuid: str):
+        if not has_explicit_permission(request.user, APPROVE_PLANNING_PERMISSION):
+            return Response({"detail": "No tiene permiso para rechazar planificaciones"}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = PlanningRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data["reason"]
+
+        planning = planning_queryset().filter(scheduler_uuid=scheduler_uuid).first()
+        if planning is None:
+            return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
+        if planning.status == Planning.STATUS_APPROVED:
+            return Response({"detail": "La planificación ya fue aprobada"}, status=status.HTTP_409_CONFLICT)
+        if planning.status == Planning.STATUS_REJECTED:
+            return Response({"detail": "La planificación ya fue rechazada"}, status=status.HTTP_409_CONFLICT)
+        if planning.status != Planning.STATUS_PENDING_APPROVAL:
+            return Response({"detail": "Sólo se puede rechazar una planificación pendiente de aprobación"}, status=status.HTTP_409_CONFLICT)
+
+        previous_status = planning.status
+        planning.status = Planning.STATUS_REJECTED
+        planning.rejected_at = timezone.now()
+        planning.rejected_by = request.user.email
+        planning.rejection_reason = reason
+        planning.save()
+        create_planning_audit_event(
+            action=PlanningAuditEvent.Action.PLANNING_REJECTED,
+            source=PlanningAuditEvent.Source.USER,
+            planning=planning,
+            actor=request.user,
+            summary=f"Planificación {planning.scheduler_uuid} rechazada",
+            metadata={
+                "scheduler_uuid": planning.scheduler_uuid,
+                "previous_status": previous_status,
+                "new_status": planning.status,
+                "rejected_by": planning.rejected_by,
+                "reason": reason,
+            },
+        )
+        return Response(PlanningSerializer(planning).data)
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class SchedulerCallbackView(APIView):
     authentication_classes = []
@@ -258,26 +316,32 @@ class SchedulerCallbackView(APIView):
         if planning is None:
             return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        planning.status = request.data.get("status", planning.status)
+        scheduler_status = request.data.get("status", planning.status)
+        planning.status = (
+            Planning.STATUS_PENDING_APPROVAL
+            if scheduler_status == "completed"
+            else scheduler_status
+        )
         planning.output_payload = request.data.get("output_payload")
         planning.error_message = request.data.get("error_message")
         planning.duration_seconds = request.data.get("duration_seconds")
-        if planning.status == "completed":
+        if scheduler_status == "completed":
             planning.progress_percentage = 100
         planning.finished_at = timezone.now()
         planning.save()
         callback_action = (
-            PlanningAuditEvent.Action.SCHEDULER_CALLBACK_COMPLETED
-            if planning.status == "completed"
+            PlanningAuditEvent.Action.PLANNING_PENDING_APPROVAL
+            if planning.status == Planning.STATUS_PENDING_APPROVAL
             else PlanningAuditEvent.Action.SCHEDULER_CALLBACK_FAILED
         )
         create_planning_audit_event(
             action=callback_action,
             source=PlanningAuditEvent.Source.SCHEDULER,
             planning=planning,
-            summary=f"Callback del Scheduler recibido con estado {planning.status}",
+            summary=f"Callback del Scheduler recibido con estado {scheduler_status}",
             metadata={
                 "scheduler_uuid": planning.scheduler_uuid,
+                "scheduler_status": scheduler_status,
                 "status": planning.status,
                 "duration_seconds": planning.duration_seconds,
                 "has_output_payload": planning.output_payload is not None,
