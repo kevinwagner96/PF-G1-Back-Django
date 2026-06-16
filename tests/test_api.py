@@ -1,3 +1,5 @@
+from datetime import datetime, time, timedelta
+
 import pytest
 from auditlog.models import LogEntry
 from django.contrib.auth import get_user_model
@@ -68,8 +70,8 @@ def test_surgeries_returns_seeded_demo_data(client):
     response = client.get("/api/v1/surgeries/")
 
     assert response.status_code == 200
-    assert len(response.json()) == 20
-    assert response.json()[0]["estado"] == "Pendiente"
+    assert len(response.json()) >= 20
+    assert sum(1 for surgery in response.json() if surgery["estado"] == "Pendiente") == 20
 
 
 def test_demo_reset_keeps_current_session(client):
@@ -472,3 +474,72 @@ def test_delete_completed_planning_creates_audit_event(client):
         actor=user,
         metadata__scheduler_uuid="55555555-2222-3333-4444-555555555555",
     ).exists()
+
+
+def test_reports_summary_requires_authentication(client):
+    response = client.get("/api/v1/reports/summary/")
+
+    assert response.status_code in {403, 401}
+
+
+def test_reports_summary_returns_three_key_indicators(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+
+    response = client.get("/api/v1/reports/summary/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "operating_room_utilization" in data
+    assert "cancellation_rate" in data
+    assert "average_wait_days" in data
+    assert "details" in data
+    assert set(data["details"]) == {"operating_rooms", "statuses", "wait_by_specialty"}
+
+
+def test_reports_summary_calculates_utilization_cancellations_and_wait(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    room_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
+    surgery_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01"
+    cancelled_surgery_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeee02"
+    started_at = timezone.make_aware(datetime.combine(datetime(2026, 7, 1), time(8, 0)))
+    finished_at = started_at + timedelta(minutes=120)
+    cancelled_started_at = timezone.make_aware(datetime.combine(datetime(2026, 7, 1), time(11, 0)))
+    cancelled_finished_at = cancelled_started_at + timedelta(minutes=60)
+
+    Surgery.objects.filter(id=surgery_id).update(
+        estado="Programada",
+        sala_id=room_id,
+        inicio=started_at,
+        fin=finished_at,
+        created_at=started_at - timedelta(days=10),
+    )
+    Surgery.objects.filter(id=cancelled_surgery_id).update(
+        estado="Cancelada",
+        sala_id=room_id,
+        inicio=cancelled_started_at,
+        fin=cancelled_finished_at,
+        created_at=cancelled_started_at - timedelta(days=20),
+    )
+
+    response = client.get("/api/v1/reports/summary/?date_from=2026-07-01&date_to=2026-07-01")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["operating_room_utilization"]["value"] == 12.5
+    assert data["cancellation_rate"]["value"] == 50.0
+    assert data["average_wait_days"]["value"] == 10.0
+
+
+def test_reports_summary_date_filters_affect_results(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+
+    response = client.get("/api/v1/reports/summary/?date_from=2030-01-01&date_to=2030-01-02")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["operating_room_utilization"]["value"] == 0.0
+    assert data["cancellation_rate"]["value"] == 0.0
+    assert data["average_wait_days"]["value"] == 0.0

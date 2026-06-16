@@ -1,6 +1,9 @@
+from datetime import datetime, time, timedelta
+
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.db import transaction
+from django.utils import timezone
 
 from accounts.permissions import (
     ACCESS_SYSTEM_ADMIN_PERMISSION,
@@ -40,6 +43,12 @@ PATIENT_NAMES = [
     "Pedro Sánchez", "Laura Fernández", "Roberto García", "Silvia Pérez", "Martín Díaz",
     "Claudia Moreno", "Diego Torres", "Patricia Vega", "Alejandro Ríos", "Natalia Castro",
     "Fernando Luna", "Gabriela Mendoza", "Oscar Navarro", "Verónica Herrera", "Sergio Romero",
+]
+
+REPORT_PATIENT_NAMES = [
+    "Esteban Molina", "Rosa Acosta", "Miguel Benítez", "Camila Pereyra",
+    "Jorge Cabrera", "Valentina Silva", "Héctor Domínguez", "Paula Aguirre",
+    "Raúl Méndez", "Mónica Ferreyra", "Iván Costa", "Julia Barrios",
 ]
 
 
@@ -151,6 +160,82 @@ def seed_demo_data() -> None:
                 intervencion_id=intervention_id,
                 defaults={"orden": 1},
             )
+
+        seed_report_demo_data()
+
+
+def make_report_datetime(day_offset: int, hour: int, minute: int = 0):
+    day = timezone.localdate() + timedelta(days=day_offset)
+    return timezone.make_aware(datetime.combine(day, time(hour, minute)))
+
+
+def seed_report_demo_data() -> None:
+    report_surgeries = [
+        (-24, 8, 0, 120, "Completada", TRAUMA, PROC_TRAUMA, ROOM_1, STAFF_1, 11),
+        (-22, 10, 30, 90, "Completada", GENERAL, PROC_GENERAL, ROOM_2, STAFF_2, 8),
+        (-20, 13, 0, 150, "Cancelada", TRAUMA, PROC_TRAUMA, ROOM_1, STAFF_1, 16),
+        (-18, 8, 30, 120, "Completada", GENERAL, PROC_GENERAL, ROOM_2, STAFF_2, 6),
+        (-15, 11, 0, 180, "Programada", TRAUMA, PROC_TRAUMA, ROOM_1, STAFF_1, 13),
+        (-12, 9, 0, 120, "Completada", GENERAL, PROC_GENERAL, ROOM_2, STAFF_2, 9),
+        (-10, 14, 0, 90, "Cancelada", GENERAL, PROC_GENERAL, ROOM_2, STAFF_2, 7),
+        (-8, 8, 0, 150, "Completada", TRAUMA, PROC_TRAUMA, ROOM_1, STAFF_1, 14),
+        (-6, 10, 0, 120, "Programada", GENERAL, PROC_GENERAL, ROOM_2, STAFF_2, 5),
+        (-4, 13, 30, 180, "Completada", TRAUMA, PROC_TRAUMA, ROOM_1, STAFF_1, 10),
+        (-2, 9, 30, 90, "Programada", GENERAL, PROC_GENERAL, ROOM_2, STAFF_2, 4),
+        (0, 12, 0, 120, "Programada", TRAUMA, PROC_TRAUMA, ROOM_1, STAFF_1, 6),
+    ]
+
+    for index, name in enumerate(REPORT_PATIENT_NAMES, start=1):
+        patient_id = f"dddddddd-dddd-dddd-dddd-dddddddddd{index + 40:02d}"
+        Patient.objects.update_or_create(
+            id=patient_id,
+            defaults={
+                "dni": f"405550{index:02d}",
+                "nombre": name,
+                "edad": 45 + index,
+                "obra_social": ["OSDE", "PAMI", "Swiss Medical", "Galeno"][index % 4],
+            },
+        )
+
+        (
+            day_offset,
+            hour,
+            minute,
+            duration_minutes,
+            surgery_status,
+            specialty_id,
+            intervention_id,
+            room_id,
+            staff_id,
+            wait_days,
+        ) = report_surgeries[index - 1]
+        started_at = make_report_datetime(day_offset, hour, minute)
+        finished_at = started_at + timedelta(minutes=duration_minutes)
+        surgery_id = f"ffffffff-ffff-ffff-ffff-ffffffff{index:04d}"
+        Surgery.objects.update_or_create(
+            id=surgery_id,
+            defaults={
+                "paciente_id": patient_id,
+                "especialidad_id": specialty_id,
+                "sala_id": room_id,
+                "tipo_anestesia_id": ANESTHESIA,
+                "inicio": started_at,
+                "fin": finished_at,
+                "estado": surgery_status,
+                "observaciones": "Caso demo histórico para reportes de indicadores",
+                "duracion_estimada_minutos": duration_minutes,
+                "prioridad_clinica": float(30 - index),
+                "cirujano_forzado_id": staff_id,
+            },
+        )
+        Surgery.objects.filter(id=surgery_id).update(
+            created_at=started_at - timedelta(days=wait_days),
+        )
+        SurgeryIntervention.objects.update_or_create(
+            cirugia_id=surgery_id,
+            intervencion_id=intervention_id,
+            defaults={"orden": 1},
+        )
 
 
 def reset_demo_state() -> int:
