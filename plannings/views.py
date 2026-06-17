@@ -16,6 +16,7 @@ from accounts.permissions import (
     has_explicit_permission,
 )
 from plannings.models import Planning, PlanningAuditEvent
+from plannings.preflight import build_planning_preflight
 from plannings.scheduler_payload import build_scheduler_payload
 from plannings.serializers import (
     PlanningCreateSerializer,
@@ -95,6 +96,15 @@ class PlanningListCreateView(APIView):
         serializer = PlanningCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         week_start = serializer.validated_data["week_start"].isoformat()
+        preflight = build_planning_preflight()
+        if not preflight["can_plan"]:
+            return Response(
+                {
+                    "detail": "No se puede generar la planificación con los datos actuales",
+                    "preflight": preflight,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         pending_surgeries = list(
             Surgery.objects.filter(estado="Pendiente")
@@ -173,6 +183,13 @@ class PlanningListCreateView(APIView):
             {"id": planning.id, "scheduler_uuid": planning.scheduler_uuid, "status": planning.status},
             status=status.HTTP_202_ACCEPTED,
         )
+
+
+class PlanningPreflightView(APIView):
+    def get(self, request):
+        if not has_explicit_permission(request.user, CREATE_PLANNING_PERMISSION):
+            return Response({"detail": "No tiene permiso para generar planificaciones"}, status=status.HTTP_403_FORBIDDEN)
+        return Response(build_planning_preflight())
 
 
 class ActivePlanningView(APIView):

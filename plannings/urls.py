@@ -5,6 +5,7 @@ from plannings.views import (
     PlanningApproveView,
     PlanningDetailView,
     PlanningListCreateView,
+    PlanningPreflightView,
     PlanningRejectView,
     SchedulerCallbackView,
 )
@@ -12,6 +13,7 @@ from plannings.views import (
 urlpatterns = [
     path("plannings/", PlanningListCreateView.as_view()),
     path("plannings/active/", ActivePlanningView.as_view()),
+    path("plannings/preflight/", PlanningPreflightView.as_view()),
     path("plannings/<str:scheduler_uuid>/", PlanningDetailView.as_view()),
     path("plannings/<str:scheduler_uuid>/approve/", PlanningApproveView.as_view()),
     path("plannings/<str:scheduler_uuid>/reject/", PlanningRejectView.as_view()),

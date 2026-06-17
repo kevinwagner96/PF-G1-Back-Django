@@ -12,7 +12,7 @@ from accounts.permissions import (
     CREATE_PLANNING_PERMISSION,
 )
 from plannings.models import Planning, PlanningAuditEvent
-from surgeries.models import Surgery
+from surgeries.models import Patient, Surgery, SurgeryIntervention
 
 pytestmark = pytest.mark.django_db
 
@@ -72,6 +72,188 @@ def test_surgeries_returns_seeded_demo_data(client):
     assert response.status_code == 200
     assert len(response.json()) >= 20
     assert sum(1 for surgery in response.json() if surgery["estado"] == "Pendiente") == 20
+    first = response.json()[0]
+    assert "intervencionIds" in first
+    assert "duracion_estimada_minutos" in first
+    assert "prioridad_clinica" in first
+    assert "created_at" in first
+
+
+def surgery_payload(**overrides):
+    payload = {
+        "patient": {
+            "dni": "44999111",
+            "nombre": "Paciente Nuevo",
+            "edad": 51,
+            "obra_social": "PAMI",
+        },
+        "intervention_ids": ["99999999-9999-9999-9999-999999999901"],
+        "tipo_anestesia_id": "77777777-7777-7777-7777-777777777701",
+        "cirujano_forzado_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+        "byer": False,
+        "sedacion": True,
+        "observaciones": "Caso creado desde MVP",
+        "duracion_estimada_minutos": 90,
+        "prioridad_clinica": 12.5,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_admin_creates_surgery_with_inline_new_patient(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+
+    response = client.post("/api/v1/surgeries/", surgery_payload(), content_type="application/json")
+
+    assert response.status_code == 201
+    data = response.json()
+    assert data["estado"] == "Pendiente"
+    assert data["dni"] == "44999111"
+    assert data["especialidad"] == "Traumatología"
+    assert data["intervencionIds"] == ["99999999-9999-9999-9999-999999999901"]
+    assert Patient.objects.filter(dni="44999111", nombre="Paciente Nuevo").exists()
+
+
+def test_admin_creates_surgery_reusing_existing_patient(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    existing_count = Patient.objects.count()
+
+    response = client.post(
+        "/api/v1/surgeries/",
+        surgery_payload(patient={"dni": "40111001", "nombre": "Juan Martínez Actualizado"}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 201
+    assert Patient.objects.count() == existing_count
+    assert response.json()["dni"] == "40111001"
+    assert Patient.objects.get(dni="40111001").nombre == "Juan Martínez Actualizado"
+
+
+def test_non_admin_cannot_create_edit_or_cancel_surgery(client):
+    user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(user)
+    surgery_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01"
+
+    create_response = client.post("/api/v1/surgeries/", surgery_payload(), content_type="application/json")
+    edit_response = client.patch(f"/api/v1/surgeries/{surgery_id}/", surgery_payload(), content_type="application/json")
+    cancel_response = client.post(f"/api/v1/surgeries/{surgery_id}/cancel/")
+
+    assert create_response.status_code == 403
+    assert edit_response.status_code == 403
+    assert cancel_response.status_code == 403
+
+
+def test_admin_edits_pending_surgery_without_changing_schedule_fields(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    surgery = Surgery.objects.get(id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01")
+    original_inicio = surgery.inicio
+    original_fin = surgery.fin
+    original_sala_id = surgery.sala_id
+
+    response = client.patch(
+        f"/api/v1/surgeries/{surgery.id}/",
+        surgery_payload(
+            patient={"dni": "40111001", "nombre": "Juan Martínez"},
+            duracion_estimada_minutos=150,
+            prioridad_clinica=18,
+            observaciones="Actualizada desde test",
+        ),
+        content_type="application/json",
+    )
+
+    surgery.refresh_from_db()
+    assert response.status_code == 200
+    assert surgery.duracion_estimada_minutos == 150
+    assert surgery.prioridad_clinica == 18
+    assert surgery.observaciones == "Actualizada desde test"
+    assert surgery.inicio == original_inicio
+    assert surgery.fin == original_fin
+    assert surgery.sala_id == original_sala_id
+
+
+def test_admin_cancels_pending_or_programmed_surgery_logically(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    surgery = Surgery.objects.get(id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01")
+    surgery.estado = "Programada"
+    surgery.sala_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
+    surgery.inicio = timezone.make_aware(datetime.combine(datetime(2026, 7, 2), time(8, 0)))
+    surgery.fin = surgery.inicio + timedelta(minutes=60)
+    surgery.save()
+
+    response = client.post(f"/api/v1/surgeries/{surgery.id}/cancel/")
+
+    surgery.refresh_from_db()
+    assert response.status_code == 200
+    assert surgery.estado == "Cancelada"
+    assert surgery.sala_id is None
+    assert surgery.inicio is None
+    assert surgery.fin is None
+
+
+def test_cannot_mutate_surgeries_when_active_planning_exists(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    Planning.objects.create(
+        scheduler_uuid="abababab-2222-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+
+    response = client.post("/api/v1/surgeries/", surgery_payload(), content_type="application/json")
+
+    assert response.status_code == 409
+
+
+def test_planning_preflight_returns_valid_demo_state(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+
+    response = client.get("/api/v1/plannings/preflight/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_plan"] is True
+    assert data["pending_count"] == 20
+    assert data["valid_count"] == 20
+    assert data["invalid_surgeries"] == []
+
+
+def test_planning_preflight_reports_invalid_pending_surgery(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    surgery = Surgery.objects.get(id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01")
+    SurgeryIntervention.objects.filter(cirugia=surgery).delete()
+
+    response = client.get("/api/v1/plannings/preflight/")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["can_plan"] is False
+    assert data["valid_count"] == 19
+    assert data["invalid_surgeries"][0]["id"] == surgery.id
+
+
+def test_create_planning_blocks_when_preflight_fails(client, monkeypatch):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    surgery = Surgery.objects.get(id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01")
+    SurgeryIntervention.objects.filter(cirugia=surgery).delete()
+    monkeypatch.setattr("plannings.views.request_scheduler_planning", lambda payload: pytest.fail("Scheduler should not be called"))
+
+    response = client.post(
+        "/api/v1/plannings/",
+        {"week_start": "2026-06-15"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["preflight"]["can_plan"] is False
 
 
 def test_demo_reset_keeps_current_session(client):
