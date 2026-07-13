@@ -37,6 +37,9 @@ PROC_TRAUMA = "99999999-9999-9999-9999-999999999901"
 PROC_GENERAL = "99999999-9999-9999-9999-999999999902"
 PROC_NEURO = "99999999-9999-9999-9999-999999999903"
 ANESTHESIA = "77777777-7777-7777-7777-777777777701"
+REPORT_VALIDATION_MARKER = "validation-report-duration"
+REPORT_VALIDATION_PATIENT_PREFIX = "valrep-"
+REPORT_VALIDATION_SURGERY_PREFIX = "valrep-surg-"
 
 PATIENT_NAMES = [
     "Juan Martínez", "María Fernández", "Lucía Gómez", "Carlos Ruiz", "Ana López",
@@ -85,6 +88,7 @@ def sync_demo_groups_and_permissions() -> None:
 def seed_demo_data() -> None:
     User = get_user_model()
     with transaction.atomic():
+        clear_report_validation_data()
         sync_demo_groups_and_permissions()
         demo_users = [
             ("sysadmin@hospital.com", "sysadmin123", {"username": "sysadmin@hospital.com", "nombre": "System Admin", "rol": "System Admin", "requiere_cambio_password": False, "bloqueado": False, "is_staff": True, "is_superuser": True}),
@@ -164,6 +168,17 @@ def seed_demo_data() -> None:
         seed_report_demo_data()
 
 
+def clear_report_validation_data() -> tuple[int, int]:
+    _, surgery_details = Surgery.objects.filter(
+        id__startswith=REPORT_VALIDATION_SURGERY_PREFIX,
+        observaciones__contains=REPORT_VALIDATION_MARKER,
+    ).delete()
+    _, patient_details = Patient.objects.filter(id__startswith=REPORT_VALIDATION_PATIENT_PREFIX).delete()
+    deleted_surgeries = surgery_details.get("surgeries.Surgery", 0)
+    deleted_patients = patient_details.get("surgeries.Patient", 0)
+    return deleted_surgeries, deleted_patients
+
+
 def make_report_datetime(day_offset: int, hour: int, minute: int = 0):
     day = timezone.localdate() + timedelta(days=day_offset)
     return timezone.make_aware(datetime.combine(day, time(hour, minute)))
@@ -240,6 +255,7 @@ def seed_report_demo_data() -> None:
 
 def reset_demo_state() -> int:
     Planning.objects.all().delete()
+    clear_report_validation_data()
     updated = Surgery.objects.update(estado="Pendiente", inicio=None, fin=None, sala=None)
     seed_demo_data()
     return updated

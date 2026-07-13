@@ -18,6 +18,18 @@ Si se necesita regenerar datos demo para ver reportes y cirugias con sentido:
 .venv/bin/python manage.py shell -c "from demo.seed import seed_demo_data; seed_demo_data()"
 ```
 
+Para preparar el validation test de duracion de reportes con 500 cirugias por mes:
+
+```bash
+.venv/bin/python manage.py seed_report_validation --year 2026 --surgeries-per-month 500
+```
+
+Al finalizar la validacion, limpiar esos datos tecnicos para volver a la demo MVP normal:
+
+```bash
+.venv/bin/python manage.py seed_report_validation --clear
+```
+
 ## Levantar PostgreSQL local
 
 El repo incluye un compose sólo para la base Django. Usa el puerto `5433` para no chocar con
