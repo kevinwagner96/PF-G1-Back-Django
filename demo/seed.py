@@ -129,7 +129,7 @@ def seed_demo_data() -> None:
                 MedicalStaffAvailability.objects.update_or_create(
                     personal_medico_id=staff_id,
                     dia=day,
-                    defaults={"id": f"cccccccc-cccc-cccc-cccc-{staff_id[-2:]}0000000{day}", "inicio_minutos": 480, "fin_minutos": 1020},
+                    defaults={"id": f"cccccccc-cccc-cccc-cccc-{staff_id[-2:]}0000000{day}", "inicio_minutos": 480, "fin_minutos": 1200},
                 )
 
         AnesthesiaType.objects.update_or_create(id=ANESTHESIA, defaults={"nombre": "General", "descripcion": "Anestesia general", "estado": True})
