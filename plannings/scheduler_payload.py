@@ -4,8 +4,8 @@ from typing import Any
 from surgeries.models import Intervention, Surgery
 
 SCHEDULER_DEFAULT_CONFIG: dict[str, int | float] = {
-    "population_size": 50,
-    "max_generations": 50,
+    "population_size": 30,
+    "max_generations": 30,
     "convergence_patience": 7,
     "mutation_rate": 0.10,
     "crossover_rate": 0.85,
@@ -14,12 +14,18 @@ SCHEDULER_DEFAULT_CONFIG: dict[str, int | float] = {
     "alpha": 0.7,
     "beta": 0.3,
     "n_days": 5,
-    "n_shifts": 2,
-    "block_duration_min": 240,
+    "n_shifts": 1,
+    "block_duration_min": 720,
     "slot_size_min": 15,
     "penalty_below_min_quota": 50.0,
     "penalty_above_max_quota": 20.0,
     "parallel_workers": 24,
+}
+
+ROOM_TYPE_RANK = {
+    "baja_complejidad": 0,
+    "media_complejidad": 1,
+    "alta_complejidad": 2,
 }
 
 
@@ -36,11 +42,39 @@ def fallback_procedure_id(specialty_code: int) -> int:
     return specialty_code * 100
 
 
+def required_room_type_for_intervention(intervention: Intervention) -> str:
+    compatible_types = intervention.especialidad.compatible_tipos_quirofano if intervention.especialidad else []
+    if not compatible_types:
+        return "media_complejidad"
+    return max(compatible_types, key=lambda room_type: ROOM_TYPE_RANK.get(room_type, 1))
+
+
+def fallback_required_room_type(specialty) -> str:
+    compatible_types = specialty.compatible_tipos_quirofano or []
+    if not compatible_types:
+        return "media_complejidad"
+    return max(compatible_types, key=lambda room_type: ROOM_TYPE_RANK.get(room_type, 1))
+
+
+def build_scheduler_availability(availability) -> list[list[bool]]:
+    return [[all(day)] if day else [False] for day in (availability or [])]
+
+
 def build_staff_availability(disponibilidades) -> dict[str, list[int]]:
     return {
         str(item.dia): [item.inicio_minutos, item.fin_minutos]
         for item in sorted(disponibilidades, key=lambda value: value.dia)
     }
+
+
+def main_specialty_id_for_staff(staff, specialty_map: dict[str, int]) -> int:
+    specialties = sorted(
+        [specialty for specialty in staff.especialidades.all() if specialty.estado],
+        key=lambda specialty: (specialty.nombre, specialty.id),
+    )
+    if not specialties:
+        return 0
+    return specialty_map.get(specialties[0].id, 0)
 
 
 def build_scheduler_payload(*, week_start: str, pending_surgeries, operating_rooms, medical_staff, specialties, interventions) -> dict[str, Any]:
@@ -50,18 +84,33 @@ def build_scheduler_payload(*, week_start: str, pending_surgeries, operating_roo
     intervention_map = indexed_map([intervention.id for intervention in interventions])
     surgery_map = indexed_map([surgery.id for surgery in pending_surgeries])
 
-    procedures_by_specialty: dict[int, set[int]] = defaultdict(set)
+    procedures_by_specialty: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for intervention in interventions:
         if intervention.especialidad_id is None:
             continue
         specialty_code = specialty_map.get(intervention.especialidad_id)
         procedure_code = intervention_map.get(intervention.id)
         if specialty_code is not None and procedure_code is not None:
-            procedures_by_specialty[specialty_code].add(procedure_code)
+            procedures_by_specialty[specialty_code].append(
+                {
+                    "id": procedure_code,
+                    "name": intervention.nombre,
+                    "specialty_id": specialty_code,
+                    "required_room_type": required_room_type_for_intervention(intervention),
+                }
+            )
 
-    for specialty_code in specialty_map.values():
+    specialty_by_code = {specialty_map[specialty.id]: specialty for specialty in specialties}
+    for specialty_code, specialty in specialty_by_code.items():
         if not procedures_by_specialty.get(specialty_code):
-            procedures_by_specialty[specialty_code].add(fallback_procedure_id(specialty_code))
+            procedures_by_specialty[specialty_code].append(
+                {
+                    "id": fallback_procedure_id(specialty_code),
+                    "name": f"Procedimiento {specialty.nombre}",
+                    "specialty_id": specialty_code,
+                    "required_room_type": fallback_required_room_type(specialty),
+                }
+            )
 
     return {
         "week_start": week_start,
@@ -74,7 +123,7 @@ def build_scheduler_payload(*, week_start: str, pending_surgeries, operating_roo
                 "id": room_map[room.id],
                 "name": room.nombre,
                 "or_type": room.tipo_quirofano,
-                "availability": room.disponibilidad,
+                "availability": build_scheduler_availability(room.disponibilidad),
             }
             for room in operating_rooms
         ],
@@ -98,18 +147,19 @@ def build_scheduler_payload(*, week_start: str, pending_surgeries, operating_roo
                 "role": staff.rol,
                 "enabled_procedures_ids": sorted(
                     {
-                        procedure_id
+                        procedure["id"]
                         for specialty in staff.especialidades.all()
-                        for procedure_id in procedures_by_specialty.get(specialty_map.get(specialty.id, -1), set())
+                        for procedure in procedures_by_specialty.get(specialty_map.get(specialty.id, -1), [])
                     }
                 ),
                 "availability_hours": build_staff_availability(staff.disponibilidades.all()),
+                "main_specialty_id": main_specialty_id_for_staff(staff, specialty_map),
             }
             for staff in medical_staff
         ],
         "procedures_by_specialty": {
-            str(specialty_code): sorted(procedure_ids)
-            for specialty_code, procedure_ids in procedures_by_specialty.items()
+            str(specialty_code): sorted(procedures, key=lambda procedure: procedure["id"])
+            for specialty_code, procedures in procedures_by_specialty.items()
         },
         "id_maps": {
             "specialties": specialty_map,

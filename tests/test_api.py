@@ -273,10 +273,17 @@ def test_create_planning_with_scheduler_mock(client, monkeypatch):
     def fake_scheduler(payload):
         assert len(payload["pending_surgeries"]) == 20
         assert payload["id_maps"]["surgeries"]
+        assert payload["config"]["n_shifts"] == 1
+        assert payload["config"]["block_duration_min"] == 720
+        assert all(len(day) == 1 for room in payload["operating_rooms"] for day in room["availability"])
+        assert payload["procedures_by_specialty"]
+        first_procedures = next(iter(payload["procedures_by_specialty"].values()))
+        assert set(first_procedures[0]) == {"id", "name", "specialty_id", "required_room_type"}
+        assert all("main_specialty_id" in staff for staff in payload["medical_staff"])
+        assert all(isinstance(staff["enabled_procedures_ids"], list) for staff in payload["medical_staff"])
         return {
             "uuid": "11111111-2222-3333-4444-555555555555",
             "status": "planning",
-            "progress_percentage": 0,
         }
 
     monkeypatch.setattr("plannings.views.request_scheduler_planning", fake_scheduler)
@@ -400,6 +407,33 @@ def test_failed_callback_creates_failed_audit_event(client, settings):
     ).exists()
 
 
+def test_polling_completed_without_callback_marks_planning_failed(client, monkeypatch):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="22222222-bbbb-3333-4444-555555555555",
+        status="planning",
+        input_payload={"week_start": "2026-06-15"},
+        progress_percentage=99,
+        started_at=timezone.now(),
+    )
+    monkeypatch.setattr(
+        "plannings.views.request_scheduler_status",
+        lambda scheduler_uuid: {
+            "uuid": scheduler_uuid,
+            "status": "completed",
+        },
+    )
+
+    response = client.get(f"/api/v1/plannings/{planning.scheduler_uuid}/")
+
+    planning.refresh_from_db()
+    assert response.status_code == 200
+    assert planning.status == "failed"
+    assert planning.progress_percentage == 99
+    assert "no recibió el callback" in planning.error_message
+
+
 def test_approve_completed_planning_programs_surgery(client):
     user = get_user_model().objects.get(email="cirujano@hospital.com")
     client.force_login(user)
@@ -423,7 +457,7 @@ def test_approve_completed_planning_programs_surgery(client):
                     "bloques": [
                         {
                             "quirofano": "Quirófano 1",
-                            "turno": "Mañana",
+                            "turno": "Jornada Completa",
                             "cronograma": [
                                 {
                                     "paciente_id": 1,
@@ -633,6 +667,23 @@ def test_surgeon_cannot_delete_pending_planning(client):
 
     assert response.status_code == 403
     assert Planning.objects.filter(id=planning.id).exists()
+
+
+def test_admin_can_delete_pending_approval_planning(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="99999999-5555-3333-4444-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-06-15"},
+        output_payload={"dias": []},
+    )
+    planning_id = planning.id
+
+    response = client.delete(f"/api/v1/plannings/{planning.scheduler_uuid}/")
+
+    assert response.status_code == 204
+    assert not Planning.objects.filter(id=planning_id).exists()
 
 
 def test_delete_completed_planning_creates_audit_event(client):

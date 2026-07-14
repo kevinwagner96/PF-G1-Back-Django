@@ -215,7 +215,22 @@ class PlanningDetailView(APIView):
                 return Response({"detail": f"Scheduler status request failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
             if scheduler_status is not None:
                 planning.progress_percentage = scheduler_status.get("progress_percentage", planning.progress_percentage)
-                planning.save(update_fields=["progress_percentage", "updated_at"])
+                status_from_scheduler = scheduler_status.get("status")
+                update_fields = ["progress_percentage", "updated_at"]
+                if status_from_scheduler == "failed":
+                    planning.status = Planning.STATUS_FAILED
+                    planning.error_message = scheduler_status.get("error_message") or "El Scheduler informó un fallo"
+                    planning.finished_at = timezone.now()
+                    update_fields.extend(["status", "error_message", "finished_at"])
+                elif status_from_scheduler == "completed":
+                    planning.status = Planning.STATUS_FAILED
+                    planning.error_message = (
+                        "El Scheduler completó la planificación, pero el Back no recibió el callback con el resultado. "
+                        "Reiniciá el Scheduler con BACK_CALLBACK_URL y generá una nueva planificación."
+                    )
+                    planning.finished_at = timezone.now()
+                    update_fields.extend(["status", "error_message", "finished_at"])
+                planning.save(update_fields=update_fields)
         return Response(PlanningSerializer(planning).data)
 
     def delete(self, request, scheduler_uuid: str):
@@ -224,7 +239,7 @@ class PlanningDetailView(APIView):
         planning = self.get_object(scheduler_uuid)
         if planning is None:
             return Response({"detail": "Planning not found"}, status=status.HTTP_404_NOT_FOUND)
-        if planning.status in Planning.ACTIVE_STATUSES:
+        if planning.status == Planning.STATUS_PLANNING:
             return Response({"detail": "No se puede eliminar una planificación en curso"}, status=status.HTTP_409_CONFLICT)
         create_planning_audit_event(
             action=PlanningAuditEvent.Action.PLANNING_DELETED,
