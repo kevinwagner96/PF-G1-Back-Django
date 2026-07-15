@@ -15,7 +15,7 @@ SCHEDULER_DEFAULT_CONFIG: dict[str, int | float] = {
     "beta": 0.3,
     "n_days": 5,
     "n_shifts": 1,
-    "block_duration_min": 720,
+    "block_duration_min": 300,
     "slot_size_min": 15,
     "penalty_below_min_quota": 50.0,
     "penalty_above_max_quota": 20.0,

@@ -274,7 +274,7 @@ def test_create_planning_with_scheduler_mock(client, monkeypatch):
         assert len(payload["pending_surgeries"]) == 20
         assert payload["id_maps"]["surgeries"]
         assert payload["config"]["n_shifts"] == 1
-        assert payload["config"]["block_duration_min"] == 720
+        assert payload["config"]["block_duration_min"] == 300
         assert all(len(day) == 1 for room in payload["operating_rooms"] for day in room["availability"])
         assert payload["procedures_by_specialty"]
         first_procedures = next(iter(payload["procedures_by_specialty"].values()))
