@@ -77,7 +77,7 @@ class SurgeryWriteSerializer(serializers.Serializer):
         allow_empty=False,
     )
     tipo_anestesia_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    cirujano_forzado_id = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    cirujano_forzado_id = serializers.CharField(required=True, allow_blank=False, allow_null=False)
     byer = serializers.BooleanField(required=False, default=False)
     sedacion = serializers.BooleanField(required=False, default=False)
     observaciones = serializers.CharField(required=False, allow_blank=True, allow_null=True)
@@ -111,11 +111,12 @@ class SurgeryWriteSerializer(serializers.Serializer):
         return value
 
     def validate_cirujano_forzado_id(self, value):
-        if not value:
-            return None
         staff = MedicalStaff.objects.filter(id=value, estado=True).first()
         if staff is None or staff.rol.lower() != "cirujano":
             raise serializers.ValidationError("El cirujano no existe, está inactivo o no tiene rol cirujano")
+        specialty = self.context.get("specialty")
+        if specialty is not None and not staff.especialidades.filter(id=specialty.id, estado=True).exists():
+            raise serializers.ValidationError("El cirujano no pertenece a la especialidad de la cirugía")
         return value
 
     def save(self, **kwargs):
@@ -176,9 +177,14 @@ class AnesthesiaTypeCatalogSerializer(serializers.ModelSerializer):
 
 
 class MedicalStaffCatalogSerializer(serializers.ModelSerializer):
+    especialidadIds = serializers.SerializerMethodField()
+
     class Meta:
         model = MedicalStaff
-        fields = ["id", "nombre", "rol"]
+        fields = ["id", "nombre", "rol", "especialidadIds"]
+
+    def get_especialidadIds(self, obj):
+        return [specialty.id for specialty in obj.especialidades.all() if specialty.estado]
 
 
 class PendingSurgerySerializer(serializers.ModelSerializer):
@@ -220,3 +226,24 @@ class MedicalStaffSerializer(serializers.ModelSerializer):
             str(item.dia): [item.inicio_minutos, item.fin_minutos]
             for item in obj.disponibilidades.all()
         }
+
+
+class MedicalStaffAvailabilityWriteSerializer(serializers.Serializer):
+    availability_hours = serializers.DictField(child=serializers.ListField(child=serializers.IntegerField()))
+
+    def validate_availability_hours(self, value):
+        normalized = {}
+        for raw_day, raw_hours in value.items():
+            try:
+                day = int(raw_day)
+            except (TypeError, ValueError) as exc:
+                raise serializers.ValidationError("Los días deben ser números entre 0 y 4") from exc
+            if day < 0 or day > 4:
+                raise serializers.ValidationError("Los días deben estar entre 0 y 4")
+            if len(raw_hours) != 2:
+                raise serializers.ValidationError(f"El día {day} debe tener inicio y fin")
+            start, end = raw_hours
+            if not 0 <= start < end <= 1440:
+                raise serializers.ValidationError(f"La franja del día {day} debe cumplir 0 <= inicio < fin <= 1440")
+            normalized[day] = (start, end)
+        return normalized

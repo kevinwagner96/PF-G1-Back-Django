@@ -1,6 +1,7 @@
 from django.urls import path
 
 from surgeries.views import (
+    MedicalStaffAvailabilityView,
     MedicalStaffListView,
     OperatingRoomListView,
     PendingSurgeryListView,
@@ -18,4 +19,5 @@ urlpatterns = [
     path("surgery-catalogs/", SurgeryCatalogsView.as_view()),
     path("operating-rooms/", OperatingRoomListView.as_view()),
     path("medical-staff/", MedicalStaffListView.as_view()),
+    path("medical-staff/<str:staff_id>/availability/", MedicalStaffAvailabilityView.as_view()),
 ]

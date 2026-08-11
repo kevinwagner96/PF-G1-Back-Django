@@ -11,8 +11,9 @@ from accounts.permissions import (
     APPROVE_PLANNING_PERMISSION,
     CREATE_PLANNING_PERMISSION,
 )
+from demo.seed import reset_demo_state
 from plannings.models import Planning, PlanningAuditEvent
-from surgeries.models import Patient, Surgery, SurgeryIntervention
+from surgeries.models import MedicalStaffAvailability, Patient, Surgery, SurgeryIntervention
 
 pytestmark = pytest.mark.django_db
 
@@ -113,6 +114,25 @@ def test_admin_creates_surgery_with_inline_new_patient(client):
     assert data["especialidad"] == "Traumatología"
     assert data["intervencionIds"] == ["99999999-9999-9999-9999-999999999901"]
     assert Patient.objects.filter(dni="44999111", nombre="Paciente Nuevo").exists()
+
+
+def test_surgery_requires_compatible_assigned_surgeon(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+
+    missing = client.post(
+        "/api/v1/surgeries/",
+        surgery_payload(cirujano_forzado_id=None),
+        content_type="application/json",
+    )
+    incompatible = client.post(
+        "/api/v1/surgeries/",
+        surgery_payload(cirujano_forzado_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2"),
+        content_type="application/json",
+    )
+
+    assert missing.status_code == 400
+    assert incompatible.status_code == 400
 
 
 def test_admin_creates_surgery_reusing_existing_patient(client):
@@ -239,6 +259,78 @@ def test_planning_preflight_reports_invalid_pending_surgery(client):
     assert data["invalid_surgeries"][0]["id"] == surgery.id
 
 
+def test_planning_preflight_requires_assigned_surgeon_with_suitable_window(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    surgery = Surgery.objects.get(id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01")
+    surgery.cirujano_forzado = None
+    surgery.save(update_fields=["cirujano_forzado"])
+
+    response = client.get("/api/v1/plannings/preflight/")
+
+    assert response.status_code == 200
+    invalid = next(item for item in response.json()["invalid_surgeries"] if item["id"] == surgery.id)
+    assert "No tiene un cirujano asignado" in invalid["reasons"]
+
+
+def test_admin_updates_surgeon_weekly_availability(client):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    staff_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1"
+
+    response = client.put(
+        f"/api/v1/medical-staff/{staff_id}/availability/",
+        {"availability_hours": {"0": [540, 720], "2": [480, 780]}},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["availability_hours"] == {"0": [540, 720], "2": [480, 780]}
+    assert list(
+        MedicalStaffAvailability.objects.filter(personal_medico_id=staff_id)
+        .order_by("dia")
+        .values_list("dia", "inicio_minutos", "fin_minutos")
+    ) == [(0, 540, 720), (2, 480, 780)]
+
+
+def test_surgeon_cannot_update_availability_and_invalid_range_is_rejected(client):
+    staff_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1"
+    surgeon_user = get_user_model().objects.get(email="cirujano@hospital.com")
+    client.force_login(surgeon_user)
+    forbidden = client.put(
+        f"/api/v1/medical-staff/{staff_id}/availability/",
+        {"availability_hours": {"0": [540, 720]}},
+        content_type="application/json",
+    )
+    assert forbidden.status_code == 403
+
+    client.force_login(get_user_model().objects.get(email="admin@hospital.com"))
+    invalid = client.put(
+        f"/api/v1/medical-staff/{staff_id}/availability/",
+        {"availability_hours": {"0": [780, 480]}},
+        content_type="application/json",
+    )
+    assert invalid.status_code == 400
+
+
+def test_cannot_update_availability_while_planning_is_active(client):
+    client.force_login(get_user_model().objects.get(email="admin@hospital.com"))
+    Planning.objects.create(
+        scheduler_uuid="abababab-aaaa-bbbb-cccc-555555555555",
+        status="pending_approval",
+        input_payload={"week_start": "2026-08-10"},
+        output_payload={"dias": []},
+    )
+
+    response = client.put(
+        "/api/v1/medical-staff/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1/availability/",
+        {"availability_hours": {"0": [540, 720]}},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 409
+
+
 def test_create_planning_blocks_when_preflight_fails(client, monkeypatch):
     user = get_user_model().objects.get(email="admin@hospital.com")
     client.force_login(user)
@@ -260,10 +352,51 @@ def test_demo_reset_keeps_current_session(client):
     user = get_user_model().objects.get(email="admin@hospital.com")
     client.force_login(user)
 
+    original_availability_id = MedicalStaffAvailability.objects.get(
+        personal_medico_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+        dia=0,
+    ).id
+    availability_response = client.put(
+        "/api/v1/medical-staff/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1/availability/",
+        {"availability_hours": {"0": [540, 720]}},
+        content_type="application/json",
+    )
+    assert availability_response.status_code == 200
+    replacement = MedicalStaffAvailability.objects.get(
+        personal_medico_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+        dia=0,
+    )
+    assert replacement.id != original_availability_id
+
     response = client.post("/api/v1/demo/reset/")
 
     assert response.status_code == 200
     assert client.get("/api/v1/auth/me/").status_code == 200
+    restored_availability = MedicalStaffAvailability.objects.filter(
+        personal_medico_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+    ).order_by("dia")
+    assert restored_availability.count() == 5
+    assert all(
+        item.inicio_minutos == 480 and item.fin_minutos == 780
+        for item in restored_availability
+    )
+
+
+def test_demo_reset_is_atomic_when_reseeding_fails(monkeypatch):
+    surgery = Surgery.objects.get(id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeee01")
+    surgery.estado = "Programada"
+    surgery.save(update_fields=["estado"])
+
+    def fail_seed():
+        raise RuntimeError("seed failure")
+
+    monkeypatch.setattr("demo.seed.seed_demo_data", fail_seed)
+
+    with pytest.raises(RuntimeError, match="seed failure"):
+        reset_demo_state()
+
+    surgery.refresh_from_db()
+    assert surgery.estado == "Programada"
 
 
 def test_create_planning_with_scheduler_mock(client, monkeypatch):
@@ -280,6 +413,7 @@ def test_create_planning_with_scheduler_mock(client, monkeypatch):
         first_procedures = next(iter(payload["procedures_by_specialty"].values()))
         assert set(first_procedures[0]) == {"id", "name", "specialty_id", "required_room_type"}
         assert all("main_specialty_id" in staff for staff in payload["medical_staff"])
+        assert all("specialties_ids" in staff for staff in payload["medical_staff"])
         assert all(isinstance(staff["enabled_procedures_ids"], list) for staff in payload["medical_staff"])
         return {
             "uuid": "11111111-2222-3333-4444-555555555555",

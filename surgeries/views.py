@@ -9,6 +9,7 @@ from surgeries.models import (
     AnesthesiaType,
     Intervention,
     MedicalStaff,
+    MedicalStaffAvailability,
     OperatingRoom,
     Specialty,
     Surgery,
@@ -16,6 +17,7 @@ from surgeries.models import (
 from surgeries.serializers import (
     AnesthesiaTypeCatalogSerializer,
     InterventionCatalogSerializer,
+    MedicalStaffAvailabilityWriteSerializer,
     MedicalStaffCatalogSerializer,
     MedicalStaffSerializer,
     OperatingRoomSerializer,
@@ -135,6 +137,39 @@ class MedicalStaffListView(APIView):
         return Response(MedicalStaffSerializer(staff, many=True).data)
 
 
+class MedicalStaffAvailabilityView(APIView):
+    @transaction.atomic
+    def put(self, request, staff_id: str):
+        if not require_surgery_management_permission(request):
+            return Response(
+                {"detail": "No tiene permiso para gestionar horarios médicos"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if has_active_planning():
+            return Response(
+                {"detail": "No se pueden modificar horarios mientras hay una planificación activa"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        staff = MedicalStaff.objects.filter(id=staff_id, estado=True, rol__iexact="cirujano").first()
+        if staff is None:
+            return Response({"detail": "Cirujano no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = MedicalStaffAvailabilityWriteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        staff.disponibilidades.all().delete()
+        MedicalStaffAvailability.objects.bulk_create(
+            MedicalStaffAvailability(
+                personal_medico=staff,
+                dia=day,
+                inicio_minutos=hours[0],
+                fin_minutos=hours[1],
+            )
+            for day, hours in sorted(serializer.validated_data["availability_hours"].items())
+        )
+        updated = MedicalStaff.objects.prefetch_related("especialidades", "disponibilidades").get(id=staff.id)
+        return Response(MedicalStaffSerializer(updated).data)
+
+
 class SurgeryCatalogsView(APIView):
     def get(self, request):
         return Response(
@@ -145,6 +180,11 @@ class SurgeryCatalogsView(APIView):
                     many=True,
                 ).data,
                 "anesthesia_types": AnesthesiaTypeCatalogSerializer(AnesthesiaType.objects.filter(estado=True).order_by("nombre"), many=True).data,
-                "surgeons": MedicalStaffCatalogSerializer(MedicalStaff.objects.filter(estado=True, rol__iexact="cirujano").order_by("nombre"), many=True).data,
+                "surgeons": MedicalStaffCatalogSerializer(
+                    MedicalStaff.objects.filter(estado=True, rol__iexact="cirujano")
+                    .prefetch_related("especialidades")
+                    .order_by("nombre"),
+                    many=True,
+                ).data,
             }
         )

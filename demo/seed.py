@@ -129,7 +129,12 @@ def seed_demo_data() -> None:
                 MedicalStaffAvailability.objects.update_or_create(
                     personal_medico_id=staff_id,
                     dia=day,
-                    defaults={"id": f"cccccccc-cccc-cccc-cccc-{staff_id[-2:]}0000000{day}", "inicio_minutos": 480, "fin_minutos": 780},
+                    create_defaults={
+                        "id": f"cccccccc-cccc-cccc-cccc-{staff_id[-2:]}0000000{day}",
+                        "inicio_minutos": 480,
+                        "fin_minutos": 780,
+                    },
+                    defaults={"inicio_minutos": 480, "fin_minutos": 780},
                 )
 
         AnesthesiaType.objects.update_or_create(id=ANESTHESIA, defaults={"nombre": "General", "descripcion": "Anestesia general", "estado": True})
@@ -253,6 +258,7 @@ def seed_report_demo_data() -> None:
         )
 
 
+@transaction.atomic
 def reset_demo_state() -> int:
     Planning.objects.all().delete()
     clear_report_validation_data()

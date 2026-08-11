@@ -154,6 +154,11 @@ def build_scheduler_payload(*, week_start: str, pending_surgeries, operating_roo
                 ),
                 "availability_hours": build_staff_availability(staff.disponibilidades.all()),
                 "main_specialty_id": main_specialty_id_for_staff(staff, specialty_map),
+                "specialties_ids": sorted(
+                    specialty_map[specialty.id]
+                    for specialty in staff.especialidades.all()
+                    if specialty.estado and specialty.id in specialty_map
+                ),
             }
             for staff in medical_staff
         ],

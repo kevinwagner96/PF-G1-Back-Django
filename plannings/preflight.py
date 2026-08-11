@@ -5,7 +5,11 @@ def build_planning_preflight() -> dict:
     pending_surgeries = (
         Surgery.objects.filter(estado="Pendiente")
         .select_related("paciente", "especialidad", "cirujano_forzado")
-        .prefetch_related("intervenciones__intervencion")
+        .prefetch_related(
+            "intervenciones__intervencion",
+            "cirujano_forzado__especialidades",
+            "cirujano_forzado__disponibilidades",
+        )
         .order_by("-prioridad_clinica", "created_at")
     )
     invalid_surgeries = []
@@ -27,12 +31,22 @@ def build_planning_preflight() -> dict:
             reasons.append("Tiene intervenciones inactivas")
         if any(intervention.especialidad_id != surgery.especialidad_id for intervention in interventions):
             reasons.append("Tiene intervenciones de otra especialidad")
-        if surgery.cirujano_forzado_id and (
-            surgery.cirujano_forzado is None
-            or not surgery.cirujano_forzado.estado
-            or surgery.cirujano_forzado.rol.lower() != "cirujano"
-        ):
-            reasons.append("El cirujano forzado no está disponible como cirujano activo")
+        surgeon = surgery.cirujano_forzado
+        if surgeon is None:
+            reasons.append("No tiene un cirujano asignado")
+        elif not surgeon.estado or surgeon.rol.lower() != "cirujano":
+            reasons.append("El cirujano asignado no está disponible como cirujano activo")
+        else:
+            if not surgeon.especialidades.filter(id=surgery.especialidad_id, estado=True).exists():
+                reasons.append("El cirujano asignado no pertenece a la especialidad de la cirugía")
+            has_suitable_window = any(
+                item.dia in range(5)
+                and max(item.inicio_minutos, 480) + surgery.duracion_estimada_minutos
+                <= min(item.fin_minutos, 780)
+                for item in surgeon.disponibilidades.all()
+            )
+            if not has_suitable_window:
+                reasons.append("El cirujano no tiene una franja entre 08:00 y 13:00 donde quepa la cirugía")
 
         if reasons:
             invalid_surgeries.append(

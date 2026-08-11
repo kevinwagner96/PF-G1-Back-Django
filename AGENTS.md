@@ -42,6 +42,7 @@ DJANGO_DEBUG=true .venv/bin/python manage.py runserver 127.0.0.1:3010
 - `POST /api/v1/plannings/{scheduler_uuid}/approve/` marca cirugías como `Programada` sólo si la planificación está en `pending_approval` y el usuario tiene `plannings.can_approve_planning`.
 - `POST /api/v1/plannings/{scheduler_uuid}/reject/` rechaza una planificación pendiente con motivo obligatorio y no modifica cirugías.
 - `GET /api/v1/reports/summary/` calcula reportes en tiempo real desde las tablas, sin mocks ni agregados persistidos.
+- `PUT /api/v1/medical-staff/{id}/availability/` reemplaza la disponibilidad semanal de un cirujano y requiere permiso de creación de planificaciones.
 - `POST /api/v1/demo/reset/` borra planificaciones, devuelve cirugías demo a `Pendiente` y conserva datos demo suficientes para reportes.
 
 ## Reglas para agentes
