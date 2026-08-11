@@ -25,6 +25,8 @@ from plannings.serializers import (
 )
 from surgeries.models import Intervention, MedicalStaff, OperatingRoom, Specialty, Surgery
 
+SCHEDULER_CALLBACK_GRACE_SECONDS = 5
+
 
 def planning_queryset():
     return Planning.objects.all()
@@ -214,6 +216,7 @@ class PlanningDetailView(APIView):
             except RuntimeError as exc:
                 return Response({"detail": f"Scheduler status request failed: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
             if scheduler_status is not None:
+                previous_progress = planning.progress_percentage
                 planning.progress_percentage = scheduler_status.get("progress_percentage", planning.progress_percentage)
                 status_from_scheduler = scheduler_status.get("status")
                 update_fields = ["progress_percentage", "updated_at"]
@@ -223,14 +226,22 @@ class PlanningDetailView(APIView):
                     planning.finished_at = timezone.now()
                     update_fields.extend(["status", "error_message", "finished_at"])
                 elif status_from_scheduler == "completed":
-                    planning.status = Planning.STATUS_FAILED
-                    planning.error_message = (
-                        "El Scheduler completó la planificación, pero el Back no recibió el callback con el resultado. "
-                        "Reiniciá el Scheduler con BACK_CALLBACK_URL y generá una nueva planificación."
-                    )
-                    planning.finished_at = timezone.now()
-                    update_fields.extend(["status", "error_message", "finished_at"])
-                planning.save(update_fields=update_fields)
+                    planning.progress_percentage = 100
+                    callback_wait_seconds = (timezone.now() - planning.updated_at).total_seconds()
+                    if previous_progress >= 100 and callback_wait_seconds >= SCHEDULER_CALLBACK_GRACE_SECONDS:
+                        planning.status = Planning.STATUS_FAILED
+                        planning.error_message = (
+                            "El Scheduler completó la planificación, pero el Back no recibió el callback con el resultado. "
+                            "Reiniciá el Scheduler con BACK_CALLBACK_URL y generá una nueva planificación."
+                        )
+                        planning.finished_at = timezone.now()
+                        update_fields.extend(["status", "error_message", "finished_at"])
+                    elif previous_progress >= 100:
+                        # Do not refresh updated_at while waiting, otherwise the grace
+                        # period would restart on every poll.
+                        update_fields = []
+                if update_fields:
+                    planning.save(update_fields=update_fields)
         return Response(PlanningSerializer(planning).data)
 
     def delete(self, request, scheduler_uuid: str):

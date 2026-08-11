@@ -541,7 +541,7 @@ def test_failed_callback_creates_failed_audit_event(client, settings):
     ).exists()
 
 
-def test_polling_completed_without_callback_marks_planning_failed(client, monkeypatch):
+def test_polling_completed_waits_for_callback_during_grace_period(client, monkeypatch):
     user = get_user_model().objects.get(email="admin@hospital.com")
     client.force_login(user)
     planning = Planning.objects.create(
@@ -563,8 +563,35 @@ def test_polling_completed_without_callback_marks_planning_failed(client, monkey
 
     planning.refresh_from_db()
     assert response.status_code == 200
+    assert planning.status == "planning"
+    assert planning.progress_percentage == 100
+    assert planning.error_message is None
+
+
+def test_polling_completed_without_callback_marks_planning_failed_after_grace(client, monkeypatch):
+    user = get_user_model().objects.get(email="admin@hospital.com")
+    client.force_login(user)
+    planning = Planning.objects.create(
+        scheduler_uuid="22222222-cccc-3333-4444-555555555555",
+        status="planning",
+        input_payload={"week_start": "2026-06-15"},
+        progress_percentage=100,
+    )
+    Planning.objects.filter(pk=planning.pk).update(updated_at=timezone.now() - timedelta(seconds=6))
+    monkeypatch.setattr(
+        "plannings.views.request_scheduler_status",
+        lambda scheduler_uuid: {
+            "uuid": scheduler_uuid,
+            "status": "completed",
+        },
+    )
+
+    response = client.get(f"/api/v1/plannings/{planning.scheduler_uuid}/")
+
+    planning.refresh_from_db()
+    assert response.status_code == 200
     assert planning.status == "failed"
-    assert planning.progress_percentage == 99
+    assert planning.progress_percentage == 100
     assert "no recibió el callback" in planning.error_message
 
 
