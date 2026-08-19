@@ -12,4 +12,4 @@ COPY . .
 
 EXPOSE 3010
 
-CMD ["sh", "-c", "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:3010"]
+CMD ["sh", "-c", "python manage.py migrate && python manage.py shell -c \"from demo.seed import reset_demo_state; reset_demo_state()\" && gunicorn config.wsgi:application --bind 0.0.0.0:3010"]
