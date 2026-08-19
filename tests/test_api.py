@@ -405,9 +405,20 @@ def test_demo_reset_keeps_current_session(client):
     ).order_by("dia")
     assert restored_availability.count() == 5
     assert all(
-        item.inicio_minutos == 480 and item.fin_minutos == 780
+        item.inicio_minutos == 480 and item.fin_minutos == 840
         for item in restored_availability
     )
+
+
+def test_demo_seed_restricts_urology_and_neuro_availability(client):
+    urology = MedicalStaffAvailability.objects.filter(
+        personal_medico_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb6",
+    ).order_by("dia")
+    neuro = MedicalStaffAvailability.objects.filter(
+        personal_medico_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3",
+    ).order_by("dia")
+    assert list(urology.values_list("dia", "inicio_minutos", "fin_minutos")) == [(4, 480, 840)]
+    assert list(neuro.values_list("dia", "inicio_minutos", "fin_minutos")) == [(3, 480, 840)]
 
 
 def test_demo_reset_is_atomic_when_reseeding_fails(monkeypatch):
@@ -917,7 +928,15 @@ def test_reports_summary_returns_three_key_indicators(client):
     assert "cancellation_rate" in data
     assert "average_wait_days" in data
     assert "details" in data
-    assert set(data["details"]) == {"operating_rooms", "statuses", "wait_by_specialty"}
+    assert set(data["details"]) == {
+        "operating_rooms",
+        "statuses",
+        "wait_by_specialty",
+        "surgeries_by_specialty",
+        "surgeries_by_day",
+    }
+    assert all(set(item) == {"specialty", "count"} for item in data["details"]["surgeries_by_specialty"])
+    assert all(set(item) == {"date", "count"} for item in data["details"]["surgeries_by_day"])
 
 
 def test_reports_summary_calculates_utilization_cancellations_and_wait(client):

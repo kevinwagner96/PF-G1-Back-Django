@@ -74,6 +74,13 @@ SPECIALTY_DEFINITIONS = [
     (UROLOGY, "Urología", ["media_complejidad"], PROC_UROLOGY, "Resección transuretral", STAFF_6, "Dr. Nicolás Torres"),
 ]
 
+# Días laborales por especialidad (0=lunes, 1=martes, 2=miércoles, 3=jueves, 4=viernes).
+# Urología atiende sólo los viernes y Neurocirugía sólo los jueves; el resto, lunes a viernes.
+STAFF_WORKDAYS: dict[str, list[int]] = {
+    UROLOGY: [4],
+    NEURO: [3],
+}
+
 REPORT_PATIENT_NAMES = [
     "Esteban Molina", "Rosa Acosta", "Miguel Benítez", "Camila Pereyra",
     "Jorge Cabrera", "Valentina Silva", "Héctor Domínguez", "Paula Aguirre",
@@ -164,17 +171,21 @@ def seed_demo_data() -> None:
             MedicalStaff.objects.update_or_create(id=staff_id, defaults={"nombre": staff_name, "rol": "cirujano", "estado": True})
         for specialty_id, _name, _compatible_rooms, _procedure_id, _procedure_name, staff_id, _staff_name in SPECIALTY_DEFINITIONS:
             MedicalStaffSpecialty.objects.get_or_create(personal_medico_id=staff_id, especialidad_id=specialty_id)
-        for _specialty_id, _name, _compatible_rooms, _procedure_id, _procedure_name, staff_id, _staff_name in SPECIALTY_DEFINITIONS:
-            for day in range(5):
+        for specialty_id, _name, _compatible_rooms, _procedure_id, _procedure_name, staff_id, _staff_name in SPECIALTY_DEFINITIONS:
+            workdays = STAFF_WORKDAYS.get(specialty_id, list(range(5)))
+            MedicalStaffAvailability.objects.filter(
+                personal_medico_id=staff_id,
+            ).exclude(dia__in=workdays).delete()
+            for day in workdays:
                 MedicalStaffAvailability.objects.update_or_create(
                     personal_medico_id=staff_id,
                     dia=day,
                     create_defaults={
                         "id": f"cccccccc-cccc-cccc-cccc-{staff_id[-2:]}0000000{day}",
                         "inicio_minutos": 480,
-                        "fin_minutos": 780,
+                        "fin_minutos": 840,
                     },
-                    defaults={"inicio_minutos": 480, "fin_minutos": 780},
+                    defaults={"inicio_minutos": 480, "fin_minutos": 840},
                 )
 
         AnesthesiaType.objects.update_or_create(id=ANESTHESIA, defaults={"nombre": "General", "descripcion": "Anestesia general", "estado": True})

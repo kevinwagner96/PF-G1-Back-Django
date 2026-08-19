@@ -51,6 +51,12 @@ class ReportsSummaryView(APIView):
             else 0.0
         )
         wait_days_by_specialty, average_wait_days = build_wait_days_by_specialty(effective_surgeries)
+        surgeries_by_specialty = build_surgeries_by_specialty(surgeries)
+        surgeries_by_day = build_surgeries_by_day(
+            date_from=date_from,
+            date_to=date_to,
+            surgeries=surgeries,
+        )
 
         return Response(
             {
@@ -82,6 +88,8 @@ class ReportsSummaryView(APIView):
                         .order_by("estado")
                     ),
                     "wait_by_specialty": wait_days_by_specialty,
+                    "surgeries_by_specialty": surgeries_by_specialty,
+                    "surgeries_by_day": surgeries_by_day,
                 },
             }
         )
@@ -160,3 +168,29 @@ def build_wait_days_by_specialty(surgeries) -> tuple[list[dict], float]:
     ]
     average_wait_days = round(sum(wait_values) / len(wait_values), 2) if wait_values else 0.0
     return details, average_wait_days
+
+
+def build_surgeries_by_specialty(surgeries) -> list[dict]:
+    rows = (
+        surgeries.values("especialidad__nombre")
+        .annotate(count=Count("id"))
+        .order_by("-count", "especialidad__nombre")
+    )
+    return [
+        {"specialty": row["especialidad__nombre"] or "Sin especialidad", "count": row["count"]}
+        for row in rows
+    ]
+
+
+def build_surgeries_by_day(*, date_from: date, date_to: date, surgeries) -> list[dict]:
+    counts_by_date: dict[date, int] = {}
+    for surgery in surgeries:
+        if surgery.inicio is None:
+            continue
+        surgery_date = surgery.inicio.date()
+        counts_by_date[surgery_date] = counts_by_date.get(surgery_date, 0) + 1
+
+    return [
+        {"date": day.isoformat(), "count": counts_by_date.get(day, 0)}
+        for day in daterange(date_from, date_to)
+    ]
