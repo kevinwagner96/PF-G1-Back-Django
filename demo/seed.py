@@ -27,15 +27,24 @@ from surgeries.models import (
 TRAUMA = "11111111-1111-1111-1111-111111111111"
 GENERAL = "22222222-2222-2222-2222-222222222222"
 NEURO = "33333333-3333-3333-3333-333333333333"
+GYNECOLOGY = "44444444-4444-4444-4444-444444444444"
+OPHTHALMOLOGY = "55555555-5555-5555-5555-555555555555"
+UROLOGY = "66666666-6666-6666-6666-666666666666"
 ROOM_1 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
 ROOM_2 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2"
 ROOM_3 = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa3"
 STAFF_1 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1"
 STAFF_2 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2"
 STAFF_3 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb3"
+STAFF_4 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb4"
+STAFF_5 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb5"
+STAFF_6 = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb6"
 PROC_TRAUMA = "99999999-9999-9999-9999-999999999901"
 PROC_GENERAL = "99999999-9999-9999-9999-999999999902"
 PROC_NEURO = "99999999-9999-9999-9999-999999999903"
+PROC_GYNECOLOGY = "99999999-9999-9999-9999-999999999904"
+PROC_OPHTHALMOLOGY = "99999999-9999-9999-9999-999999999905"
+PROC_UROLOGY = "99999999-9999-9999-9999-999999999906"
 ANESTHESIA = "77777777-7777-7777-7777-777777777701"
 REPORT_VALIDATION_MARKER = "validation-report-duration"
 REPORT_VALIDATION_PATIENT_PREFIX = "valrep-"
@@ -46,6 +55,23 @@ PATIENT_NAMES = [
     "Pedro Sánchez", "Laura Fernández", "Roberto García", "Silvia Pérez", "Martín Díaz",
     "Claudia Moreno", "Diego Torres", "Patricia Vega", "Alejandro Ríos", "Natalia Castro",
     "Fernando Luna", "Gabriela Mendoza", "Oscar Navarro", "Verónica Herrera", "Sergio Romero",
+    "Valentina Castro", "Nicolás Vera", "Micaela Sosa", "Federico Paz", "Carolina Suárez",
+    "Hernán Acosta", "Sofía Núñez", "Tomás Molina", "Camila Pereyra", "Jorge Cabrera",
+    "Rosa Acosta", "Miguel Benítez", "Paula Aguirre", "Esteban Molina", "Julia Barrios",
+    "Iván Costa", "Mónica Ferreyra", "Raúl Méndez", "Héctor Domínguez", "Valeria Rojas",
+    "Mariano Silva", "Florencia Ortiz", "Gonzalo Navarro", "Daniela Romero", "Emiliano Paz",
+    "Agustina Vera", "Leandro Campos", "Cecilia Duarte", "Matías Correa", "Lorena Giménez",
+    "Bruno Méndez", "Noelia Suárez", "Facundo Acosta", "Elena Figueroa", "Ramiro Soto",
+    "Milagros Arias", "Pablo Benítez", "Rocío Molina", "Andrés Ferreyra", "Natalia Ríos",
+]
+
+SPECIALTY_DEFINITIONS = [
+    (TRAUMA, "Traumatología", ["alta_complejidad"], PROC_TRAUMA, "Artroscopia de rodilla", STAFF_1, "Dr. Pérez"),
+    (GENERAL, "Cirugía General", ["media_complejidad"], PROC_GENERAL, "Colecistectomía laparoscópica", STAFF_2, "Dra. Sosa"),
+    (GYNECOLOGY, "Ginecología", ["media_complejidad"], PROC_GYNECOLOGY, "Histerectomía laparoscópica", STAFF_4, "Dra. Valentina Ruiz"),
+    (NEURO, "Neurocirugía", ["alta_complejidad"], PROC_NEURO, "Descompresión lumbar", STAFF_3, "Dr. Gómez"),
+    (OPHTHALMOLOGY, "Oftalmología", ["baja_complejidad"], PROC_OPHTHALMOLOGY, "Cirugía de cataratas", STAFF_5, "Dra. Paula Méndez"),
+    (UROLOGY, "Urología", ["media_complejidad"], PROC_UROLOGY, "Resección transuretral", STAFF_6, "Dr. Nicolás Torres"),
 ]
 
 REPORT_PATIENT_NAMES = [
@@ -57,7 +83,7 @@ REPORT_PATIENT_NAMES = [
 
 DEMO_GROUPS = {
     "System Admin": [ACCESS_SYSTEM_ADMIN_PERMISSION],
-    "Administrador": [CREATE_PLANNING_PERMISSION],
+    "Administrador": [CREATE_PLANNING_PERMISSION, APPROVE_PLANNING_PERMISSION],
     "Cirujano": [APPROVE_PLANNING_PERMISSION],
     "Jefe Quirofano": [],
     "Recepcionista": [],
@@ -107,24 +133,38 @@ def seed_demo_data() -> None:
             if group := Group.objects.filter(name=group_name).first():
                 user.groups.set([group])
 
-        Specialty.objects.update_or_create(id=TRAUMA, defaults={"nombre": "Traumatología", "estado": True, "compatible_tipos_quirofano": ["alta_complejidad"], "min_bloques": 4, "max_bloques": 4})
-        Specialty.objects.update_or_create(id=GENERAL, defaults={"nombre": "Cirugía General", "estado": True, "compatible_tipos_quirofano": ["media_complejidad"], "min_bloques": 4, "max_bloques": 4})
-        Specialty.objects.update_or_create(id=NEURO, defaults={"nombre": "Neurología", "estado": False, "compatible_tipos_quirofano": ["alta_complejidad"], "min_bloques": 2, "max_bloques": 4})
+        for specialty_id, name, compatible_rooms, *_ in SPECIALTY_DEFINITIONS:
+            Specialty.objects.update_or_create(
+                id=specialty_id,
+                defaults={
+                    "nombre": name,
+                    "estado": True,
+                    "compatible_tipos_quirofano": compatible_rooms,
+                    "min_bloques": 1,
+                    "max_bloques": 3,
+                },
+            )
 
         OperatingRoom.objects.update_or_create(id=ROOM_1, defaults={"nombre": "Quirófano 1", "piso": "1", "disponible": True, "tipo_quirofano": "alta_complejidad", "disponibilidad": [[True, True], [True, True], [True, True], [True, True], [True, True]]})
         OperatingRoom.objects.update_or_create(id=ROOM_2, defaults={"nombre": "Quirófano 2", "piso": "1", "disponible": True, "tipo_quirofano": "media_complejidad", "disponibilidad": [[True, True], [True, True], [True, True], [True, True], [True, True]]})
         OperatingRoom.objects.update_or_create(id=ROOM_3, defaults={"nombre": "Quirófano 3", "piso": "2", "disponible": False, "tipo_quirofano": "baja_complejidad", "disponibilidad": [[True, False], [True, False], [True, False], [True, False], [True, False]]})
 
-        Intervention.objects.update_or_create(id=PROC_TRAUMA, defaults={"nombre": "Artroscopia de rodilla", "descripcion": "Procedimiento demo para planificación IA", "especialidad_id": TRAUMA, "estado": True})
-        Intervention.objects.update_or_create(id=PROC_GENERAL, defaults={"nombre": "Colecistectomía laparoscópica", "descripcion": "Procedimiento demo para planificación IA", "especialidad_id": GENERAL, "estado": True})
-        Intervention.objects.update_or_create(id=PROC_NEURO, defaults={"nombre": "Descompresión lumbar", "descripcion": "Procedimiento demo para planificación IA", "especialidad_id": NEURO, "estado": True})
+        for specialty_id, _name, _compatible_rooms, procedure_id, procedure_name, _staff_id, _staff_name in SPECIALTY_DEFINITIONS:
+            Intervention.objects.update_or_create(
+                id=procedure_id,
+                defaults={
+                    "nombre": procedure_name,
+                    "descripcion": "Procedimiento demo para planificación IA",
+                    "especialidad_id": specialty_id,
+                    "estado": True,
+                },
+            )
 
-        MedicalStaff.objects.update_or_create(id=STAFF_1, defaults={"nombre": "Dr. Pérez", "rol": "cirujano", "estado": True})
-        MedicalStaff.objects.update_or_create(id=STAFF_2, defaults={"nombre": "Dra. Sosa", "rol": "cirujano", "estado": True})
-        MedicalStaff.objects.update_or_create(id=STAFF_3, defaults={"nombre": "Dr. Gómez", "rol": "cirujano", "estado": True})
-        for staff_id, specialty_id in [(STAFF_1, TRAUMA), (STAFF_2, GENERAL), (STAFF_3, NEURO)]:
+        for _specialty_id, _name, _compatible_rooms, _procedure_id, _procedure_name, staff_id, staff_name in SPECIALTY_DEFINITIONS:
+            MedicalStaff.objects.update_or_create(id=staff_id, defaults={"nombre": staff_name, "rol": "cirujano", "estado": True})
+        for specialty_id, _name, _compatible_rooms, _procedure_id, _procedure_name, staff_id, _staff_name in SPECIALTY_DEFINITIONS:
             MedicalStaffSpecialty.objects.get_or_create(personal_medico_id=staff_id, especialidad_id=specialty_id)
-        for staff_id in [STAFF_1, STAFF_2]:
+        for _specialty_id, _name, _compatible_rooms, _procedure_id, _procedure_name, staff_id, _staff_name in SPECIALTY_DEFINITIONS:
             for day in range(5):
                 MedicalStaffAvailability.objects.update_or_create(
                     personal_medico_id=staff_id,
@@ -139,14 +179,14 @@ def seed_demo_data() -> None:
 
         AnesthesiaType.objects.update_or_create(id=ANESTHESIA, defaults={"nombre": "General", "descripcion": "Anestesia general", "estado": True})
 
-        for index, name in enumerate(PATIENT_NAMES, start=1):
+        for index in range(1, 61):
+            specialty_index = (index - 1) // 10
+            specialty_id, _specialty_name, _compatible_rooms, intervention_id, _procedure_name, forced_staff, _staff_name = SPECIALTY_DEFINITIONS[specialty_index]
+            name = PATIENT_NAMES[index - 1]
             Patient.objects.update_or_create(
                 id=f"dddddddd-dddd-dddd-dddd-dddddddddd{index:02d}",
                 defaults={"dni": f"401110{index:02d}", "nombre": name, "edad": 38 + index, "obra_social": ["OSDE", "PAMI", "Swiss Medical", "Galeno", "Medifé"][index % 5]},
             )
-            specialty_id = TRAUMA if index <= 10 else GENERAL
-            forced_staff = STAFF_1 if index <= 10 else STAFF_2
-            intervention_id = PROC_TRAUMA if index <= 10 else PROC_GENERAL
             surgery_id = f"eeeeeeee-eeee-eeee-eeee-eeeeeeeeee{index:02d}"
             Surgery.objects.update_or_create(
                 id=surgery_id,
@@ -160,7 +200,7 @@ def seed_demo_data() -> None:
                     "estado": "Pendiente",
                     "observaciones": "Caso demo ampliado para planificación IA",
                     "duracion_estimada_minutos": 180 if index % 3 == 0 else 120,
-                    "prioridad_clinica": float(21 - index),
+                    "prioridad_clinica": float(20 - ((index - 1) % 20)),
                     "cirujano_forzado_id": forced_staff,
                 },
             )

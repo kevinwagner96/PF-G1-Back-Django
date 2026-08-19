@@ -13,7 +13,13 @@ from accounts.permissions import (
 )
 from demo.seed import reset_demo_state
 from plannings.models import Planning, PlanningAuditEvent
-from surgeries.models import MedicalStaffAvailability, Patient, Surgery, SurgeryIntervention
+from surgeries.models import (
+    MedicalStaff,
+    MedicalStaffAvailability,
+    Patient,
+    Surgery,
+    SurgeryIntervention,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -49,7 +55,7 @@ def test_demo_seed_creates_groups_and_user_permissions(client):
     client.force_login(admin)
     admin_permissions = client.get("/api/v1/auth/me/").json()["user"]["permissions"]
     assert CREATE_PLANNING_PERMISSION in admin_permissions
-    assert APPROVE_PLANNING_PERMISSION not in admin_permissions
+    assert APPROVE_PLANNING_PERMISSION in admin_permissions
     assert ACCESS_SYSTEM_ADMIN_PERMISSION not in admin_permissions
 
     client.force_login(surgeon)
@@ -72,7 +78,29 @@ def test_surgeries_returns_seeded_demo_data(client):
 
     assert response.status_code == 200
     assert len(response.json()) >= 20
-    assert sum(1 for surgery in response.json() if surgery["estado"] == "Pendiente") == 20
+    pending = [surgery for surgery in response.json() if surgery["estado"] == "Pendiente"]
+    assert len(pending) == 60
+    assert {surgery["especialidad"] for surgery in pending} == {
+        "Cirugía General",
+        "Ginecología",
+        "Neurocirugía",
+        "Oftalmología",
+        "Traumatología",
+        "Urología",
+    }
+    specialties = {
+        "Cirugía General",
+        "Ginecología",
+        "Neurocirugía",
+        "Oftalmología",
+        "Traumatología",
+        "Urología",
+    }
+    assert all(sum(1 for surgery in pending if surgery["especialidad"] == specialty) >= 10 for specialty in specialties)
+    assert all(
+        MedicalStaff.objects.filter(especialidades__nombre=specialty, rol__iexact="cirujano", estado=True).distinct().count() == 1
+        for specialty in specialties
+    )
     first = response.json()[0]
     assert "intervencionIds" in first
     assert "duracion_estimada_minutos" in first
@@ -239,8 +267,8 @@ def test_planning_preflight_returns_valid_demo_state(client):
     assert response.status_code == 200
     data = response.json()
     assert data["can_plan"] is True
-    assert data["pending_count"] == 20
-    assert data["valid_count"] == 20
+    assert data["pending_count"] == 60
+    assert data["valid_count"] == 60
     assert data["invalid_surgeries"] == []
 
 
@@ -255,7 +283,7 @@ def test_planning_preflight_reports_invalid_pending_surgery(client):
     assert response.status_code == 200
     data = response.json()
     assert data["can_plan"] is False
-    assert data["valid_count"] == 19
+    assert data["valid_count"] == 59
     assert data["invalid_surgeries"][0]["id"] == surgery.id
 
 
@@ -404,7 +432,7 @@ def test_create_planning_with_scheduler_mock(client, monkeypatch):
     client.force_login(user)
 
     def fake_scheduler(payload):
-        assert len(payload["pending_surgeries"]) == 20
+        assert len(payload["pending_surgeries"]) == 60
         assert payload["id_maps"]["surgeries"]
         assert payload["config"]["n_shifts"] == 1
         assert payload["config"]["block_duration_min"] == 300
@@ -655,7 +683,7 @@ def test_approve_completed_planning_programs_surgery(client):
     assert LogEntry.objects.filter(object_pk=surgery.id).exists()
 
 
-def test_admin_cannot_approve_pending_planning(client):
+def test_admin_can_approve_pending_planning(client):
     user = get_user_model().objects.get(email="admin@hospital.com")
     client.force_login(user)
     planning = Planning.objects.create(
@@ -668,11 +696,12 @@ def test_admin_cannot_approve_pending_planning(client):
     response = client.post(f"/api/v1/plannings/{planning.scheduler_uuid}/approve/")
 
     planning.refresh_from_db()
-    assert response.status_code == 403
-    assert planning.status == "pending_approval"
-    assert not PlanningAuditEvent.objects.filter(
+    assert response.status_code == 200
+    assert planning.status == "approved"
+    assert PlanningAuditEvent.objects.filter(
         action=PlanningAuditEvent.Action.PLANNING_APPROVED,
         planning=planning,
+        actor=user,
     ).exists()
 
 

@@ -64,7 +64,7 @@ El admin se accede en `http://127.0.0.1:3010/admin/` con `sysadmin@hospital.com 
 La demo usa grupos y permisos Django:
 
 - `System Admin`: acceso técnico a Django Admin.
-- `Administrador`: puede generar planificaciones.
+- `Administrador`: puede generar, revisar y aprobar planificaciones.
 - `Cirujano`: puede revisar planificaciones pendientes, aprobarlas o rechazarlas con motivo.
 - `Jefe Quirofano` y `Recepcionista`: sin permisos de planificación por defecto.
 
