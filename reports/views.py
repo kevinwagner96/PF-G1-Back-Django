@@ -1,6 +1,7 @@
 from datetime import date, datetime, time, timedelta
 
 from django.db.models import Count
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.response import Response
@@ -35,9 +36,12 @@ class ReportsSummaryView(APIView):
 
         started_from = timezone.make_aware(datetime.combine(date_from, time.min))
         started_to = timezone.make_aware(datetime.combine(date_to, time.max))
-        surgeries = Surgery.objects.filter(inicio__gte=started_from, inicio__lte=started_to)
+        surgeries = Surgery.objects.annotate(
+            report_start=Coalesce("inicio", "cancellation__scheduled_start"),
+        ).filter(report_start__gte=started_from, report_start__lte=started_to)
 
-        effective_surgeries = surgeries.exclude(estado="Cancelada")
+        effective_surgeries = surgeries.exclude(estado__in=["Cancelada", "Pendiente"])
+        surgeries = surgeries.exclude(estado="Pendiente")
         room_details, utilization_percentage = build_operating_room_utilization(
             date_from=date_from,
             date_to=date_to,
@@ -185,9 +189,7 @@ def build_surgeries_by_specialty(surgeries) -> list[dict]:
 def build_surgeries_by_day(*, date_from: date, date_to: date, surgeries) -> list[dict]:
     counts_by_date: dict[date, int] = {}
     for surgery in surgeries:
-        if surgery.inicio is None:
-            continue
-        surgery_date = surgery.inicio.date()
+        surgery_date = surgery.report_start.date()
         counts_by_date[surgery_date] = counts_by_date.get(surgery_date, 0) + 1
 
     return [

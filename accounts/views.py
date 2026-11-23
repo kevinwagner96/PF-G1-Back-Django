@@ -1,10 +1,12 @@
 from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
+from django.db import transaction
 from django.middleware.csrf import get_token
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.serializers import AuthUserSerializer
+from plannings.agenda import release_session_locks
 
 
 class CsrfView(APIView):
@@ -33,7 +35,9 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
+    @transaction.atomic
     def post(self, request):
+        release_session_locks(request)
         logout(request)
         return Response(status=status.HTTP_204_NO_CONTENT)
 

@@ -3,6 +3,7 @@ from typing import Any
 
 from surgeries.models import Intervention, Surgery
 
+DAY_START_MINUTE = 540
 SCHEDULER_DEFAULT_CONFIG: dict[str, int | float] = {
     "population_size": 30,
     "max_generations": 30,
@@ -46,7 +47,10 @@ def required_room_type_for_intervention(intervention: Intervention) -> str:
     compatible_types = intervention.especialidad.compatible_tipos_quirofano if intervention.especialidad else []
     if not compatible_types:
         return "media_complejidad"
-    return max(compatible_types, key=lambda room_type: ROOM_TYPE_RANK.get(room_type, 1))
+    return max(
+        (room_type for room_type in compatible_types if room_type in ROOM_TYPE_RANK),
+        key=ROOM_TYPE_RANK.__getitem__, default="media_complejidad",
+    )
 
 
 def fallback_required_room_type(specialty) -> str:

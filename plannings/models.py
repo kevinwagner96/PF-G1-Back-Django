@@ -1,7 +1,7 @@
 import uuid
 
 from django.conf import settings
-from django.db import models
+from django.db import models, router, transaction
 
 
 def new_uuid() -> str:
@@ -18,7 +18,17 @@ class Planning(models.Model):
 
     id = models.CharField(max_length=36, primary_key=True, default=new_uuid)
     scheduler_uuid = models.CharField(max_length=36, unique=True, db_index=True)
+    week_start = models.DateField(null=True, blank=True, db_index=True)
+    operational = models.BooleanField(default=False)
     status = models.CharField(max_length=40, db_index=True)
+    current_version = models.ForeignKey(
+        "PlanningVersion", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
+    applied_version = models.ForeignKey(
+        "PlanningVersion", null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="+",
+    )
     input_payload = models.JSONField()
     output_payload = models.JSONField(null=True, blank=True)
     error_message = models.TextField(null=True, blank=True)
@@ -39,7 +49,116 @@ class Planning(models.Model):
         permissions = [
             ("can_create_planning", "Can create planning"),
             ("can_approve_planning", "Can approve planning"),
+            ("can_edit_specialty_planning", "Can edit planning for own specialties"),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["week_start"], condition=models.Q(operational=True),
+                name="unique_operational_planning_week",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(operational=False) | models.Q(week_start__isnull=False),
+                name="operational_planning_requires_week",
+            ),
+        ]
+
+
+class PlanningVersion(models.Model):
+    class Origin(models.TextChoices):
+        SCHEDULER = "scheduler", "Generación inicial"
+        ORDINARY = "ordinary", "Edición manual"
+        URGENT = "urgent", "Ajuste urgente"
+        HISTORICAL = "historical", "Agenda histórica"
+
+    planning = models.ForeignKey(Planning, on_delete=models.CASCADE, related_name="versions")
+    number = models.PositiveIntegerField()
+    origin = models.CharField(max_length=20, choices=Origin.choices)
+    assignments = models.JSONField(default=dict)
+    changes = models.JSONField(default=list)
+    reason = models.TextField(blank=True)
+    actor_name = models.CharField(max_length=255, blank=True)
+    urgent_surgery = models.ForeignKey(
+        "surgeries.Surgery", null=True, blank=True, on_delete=models.SET_NULL,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-number"]
+        constraints = [
+            models.UniqueConstraint(fields=["planning", "number"], name="unique_planning_version"),
+        ]
+
+
+class SpecialtyChief(models.Model):
+    specialty = models.OneToOneField("surgeries.Specialty", on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+    designation = models.UUIDField(default=uuid.uuid4, editable=False)
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        from surgeries.models import MedicalStaff
+
+        if self.user_id and self.specialty_id:
+            if not self.user.is_active or self.user.bloqueado or not MedicalStaff.objects.filter(
+                pk=self.user.personal_id, estado=True, rol__iexact="cirujano",
+                especialidades=self.specialty, especialidades__estado=True,
+            ).exists():
+                raise ValidationError({"user": "El jefe debe ser un cirujano activo de la especialidad."})
+
+    def save(self, *args, **kwargs):
+        from surgeries.models import Specialty
+
+        database = kwargs.get("using") or router.db_for_write(type(self), instance=self)
+        with transaction.atomic(using=database):
+            Specialty.objects.using(database).select_for_update(no_key=True).get(pk=self.specialty_id)
+            previous = type(self).objects.using(database).filter(pk=self.pk).first() if self.pk else None
+            if previous:
+                fields = kwargs.get("update_fields")
+                changed = (
+                    (fields is None or {"user_id", "user"} & set(fields)) and previous.user_id != self.user_id
+                ) or (
+                    (fields is None or {"specialty_id", "specialty"} & set(fields))
+                    and previous.specialty_id != self.specialty_id
+                )
+                self.designation = uuid.uuid4() if changed else previous.designation
+                if changed and fields is not None:
+                    kwargs["update_fields"] = {*fields, "designation"}
+            super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.specialty.nombre} — {self.user.nombre}"
+
+
+class PlanningVote(models.Model):
+    version = models.ForeignKey(PlanningVersion, on_delete=models.CASCADE, related_name="votes")
+    designation = models.UUIDField()
+    specialty_id = models.CharField(max_length=36)
+    specialty_name = models.CharField(max_length=120)
+    actor_id = models.PositiveBigIntegerField()
+    actor_name = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["version", "designation"], name="unique_designation_vote"),
+        ]
+
+
+class PlanningEditLock(models.Model):
+    planning = models.OneToOneField(Planning, on_delete=models.CASCADE, related_name="edit_lock")
+    version = models.ForeignKey(PlanningVersion, on_delete=models.CASCADE)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    session_digest = models.CharField(max_length=64)
+    token = models.UUIDField(default=uuid.uuid4, editable=False)
+    urgent = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class AppliedSurgery(models.Model):
+    planning = models.ForeignKey(Planning, on_delete=models.CASCADE, related_name="applied_surgeries")
+    surgery = models.OneToOneField("surgeries.Surgery", on_delete=models.CASCADE)
 
 
 class PlanningAuditEvent(models.Model):
@@ -56,6 +175,13 @@ class PlanningAuditEvent(models.Model):
         PLANNING_APPROVED = "planning_approved", "Planning approved"
         PLANNING_REJECTED = "planning_rejected", "Planning rejected"
         PLANNING_DELETED = "planning_deleted", "Planning deleted"
+        LOCK_ACQUIRED = "lock_acquired", "Edición iniciada"
+        LOCK_RELEASED = "lock_released", "Edición cerrada"
+        LOCK_RECOVERED = "lock_recovered", "Bloqueo recuperado"
+        VERSION_SAVED = "version_saved", "Versión guardada"
+        VOTE_RECORDED = "vote_recorded", "Voto registrado"
+        URGENCY_APPLIED = "urgency_applied", "Urgencia aplicada"
+        SURGERY_CANCELLED = "surgery_cancelled", "Cirugía cancelada"
         SURGERY_SCHEDULED_FROM_PLANNING = (
             "surgery_scheduled_from_planning",
             "Surgery scheduled from planning",

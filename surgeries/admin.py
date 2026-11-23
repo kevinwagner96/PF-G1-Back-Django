@@ -81,7 +81,7 @@ class AnesthesiaTypeAdmin(admin.ModelAdmin):
 
 @admin.register(Supply)
 class SupplyAdmin(admin.ModelAdmin):
-    list_display = ("nombre", "stock")
+    list_display = ("nombre",)
     search_fields = ("nombre",)
 
 

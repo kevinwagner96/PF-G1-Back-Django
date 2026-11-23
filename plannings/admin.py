@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from plannings.models import Planning, PlanningAuditEvent
+from plannings.models import Planning, PlanningAuditEvent, SpecialtyChief
 
 
 @admin.register(Planning)
@@ -16,6 +16,24 @@ class PlanningAdmin(admin.ModelAdmin):
     list_filter = ("status", "created_at", "approved_at")
     search_fields = ("scheduler_uuid", "approved_by", "error_message")
     readonly_fields = ("id", "scheduler_uuid", "created_at", "updated_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SpecialtyChief)
+class SpecialtyChiefAdmin(admin.ModelAdmin):
+    list_display = ("specialty", "user")
+    autocomplete_fields = ("user",)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 @admin.register(PlanningAuditEvent)

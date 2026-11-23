@@ -8,6 +8,7 @@ from django.utils import timezone
 from demo.seed import (
     REPORT_VALIDATION_MARKER,
     clear_report_validation_data,
+    configure_demo_chiefs,
     seed_demo_data,
 )
 from surgeries.models import (
@@ -19,6 +20,7 @@ from surgeries.models import (
     Surgery,
     SurgeryIntervention,
 )
+
 
 class Command(BaseCommand):
     help = "Seed deterministic scheduled surgeries for report duration validation."
@@ -50,6 +52,7 @@ class Command(BaseCommand):
                 return
 
             seed_demo_data()
+            configure_demo_chiefs()
             resources = self._load_resources()
             total = 0
             for month in range(1, 13):

@@ -1,3 +1,5 @@
+import uuid
+
 from rest_framework import serializers
 
 from surgeries.models import (
@@ -7,14 +9,32 @@ from surgeries.models import (
     OperatingRoom,
     Patient,
     Specialty,
+    Supply,
     Surgery,
     SurgeryIntervention,
+    SurgerySupply,
 )
 
 
 class SurgerySupplySerializer(serializers.Serializer):
+    insumo_id = serializers.CharField()
     nombre = serializers.CharField(source="insumo.nombre")
     cantidad = serializers.IntegerField()
+    observaciones = serializers.CharField(allow_null=True)
+
+
+class SupplyInputSerializer(serializers.Serializer):
+    insumo_id = serializers.PrimaryKeyRelatedField(
+        queryset=Supply.objects.all(), required=False, source="supply",
+    )
+    nombre = serializers.CharField(max_length=180, required=False)
+    cantidad = serializers.IntegerField(min_value=1, max_value=2147483647)
+    observaciones = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2000)
+
+    def validate(self, data):
+        if ("supply" in data) == ("nombre" in data):
+            raise serializers.ValidationError("Indicá una referencia de catálogo o un nombre.")
+        return data
 
 
 class SurgeryListSerializer(serializers.ModelSerializer):
@@ -36,6 +56,8 @@ class SurgeryListSerializer(serializers.ModelSerializer):
     cirujanoForzado = serializers.SerializerMethodField()
     duracion_estimada_minutos = serializers.IntegerField()
     prioridad_clinica = serializers.FloatField()
+    motivo_cancelacion = serializers.CharField(source="cancellation.reason", default=None)
+    identificacion_provisional = serializers.SerializerMethodField()
 
     class Meta:
         model = Surgery
@@ -45,6 +67,7 @@ class SurgeryListSerializer(serializers.ModelSerializer):
             "byer", "sedacion", "estado", "intervencionIds", "intervenciones", "insumos",
             "observaciones", "duracion_estimada_minutos", "prioridad_clinica", "cirujanoForzadoId",
             "cirujanoForzado", "created_at", "updated_at",
+            "motivo_cancelacion", "identificacion_provisional",
         ]
 
     def get_intervencionIds(self, obj):
@@ -52,6 +75,9 @@ class SurgeryListSerializer(serializers.ModelSerializer):
 
     def get_intervenciones(self, obj):
         return [item.intervencion.nombre for item in obj.intervenciones.all()]
+
+    def get_identificacion_provisional(self, obj):
+        return obj.paciente.dni if obj.paciente.dni.startswith("PROV-") else None
 
     def get_cirujanoForzado(self, obj):
         if obj.cirujano_forzado is None:
@@ -69,6 +95,12 @@ class PatientInlineSerializer(serializers.Serializer):
     edad = serializers.IntegerField(required=False, allow_null=True, min_value=0)
     obra_social = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=120, trim_whitespace=True)
 
+    def validate_dni(self, value):
+        current = self.root.instance
+        if value.upper().startswith("PROV-") and (current is None or current.paciente.dni != value):
+            raise serializers.ValidationError("Usá una identificación de paciente definitiva.")
+        return value
+
 
 class SurgeryWriteSerializer(serializers.Serializer):
     patient = PatientInlineSerializer()
@@ -83,6 +115,13 @@ class SurgeryWriteSerializer(serializers.Serializer):
     observaciones = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     duracion_estimada_minutos = serializers.IntegerField(min_value=1)
     prioridad_clinica = serializers.FloatField(min_value=0.000001)
+    insumos = SupplyInputSerializer(many=True, required=False, max_length=100)
+
+    def validate_insumos(self, items):
+        keys = [(item["supply"].nombre if "supply" in item else item["nombre"]).casefold() for item in items]
+        if len(set(keys)) != len(keys):
+            raise serializers.ValidationError("No se pueden repetir insumos.")
+        return items
 
     def validate_intervention_ids(self, value):
         if len(set(value)) != len(value):
@@ -99,7 +138,8 @@ class SurgeryWriteSerializer(serializers.Serializer):
         specialty = interventions[0].especialidad
         if specialty is None or not specialty.estado:
             raise serializers.ValidationError("La especialidad de la intervención no está activa")
-        self.context["interventions"] = interventions
+        by_id = {item.pk: item for item in interventions}
+        self.context["interventions"] = [by_id[item_id] for item_id in value]
         self.context["specialty"] = specialty
         return value
 
@@ -119,8 +159,7 @@ class SurgeryWriteSerializer(serializers.Serializer):
             raise serializers.ValidationError("El cirujano no pertenece a la especialidad de la cirugía")
         return value
 
-    def save(self, **kwargs):
-        patient_data = self.validated_data["patient"]
+    def resolve_patient(self, patient_data):
         patient, _ = Patient.objects.update_or_create(
             dni=patient_data["dni"],
             defaults={
@@ -129,6 +168,10 @@ class SurgeryWriteSerializer(serializers.Serializer):
                 "obra_social": patient_data.get("obra_social") or None,
             },
         )
+        return patient
+
+    def save(self, **kwargs):
+        patient = self.resolve_patient(self.validated_data["patient"])
         interventions = self.context["interventions"]
         specialty = self.context["specialty"]
         surgery = self.instance or Surgery()
@@ -153,7 +196,45 @@ class SurgeryWriteSerializer(serializers.Serializer):
                 intervencion=intervention,
                 defaults={"orden": index},
             )
+        if "insumos" in self.validated_data:
+            surgery.insumos.all().delete()
+            for item in self.validated_data["insumos"]:
+                supply = item.get("supply")
+                if supply is None:
+                    supply = Supply.objects.filter(nombre__iexact=item["nombre"]).first()
+                if supply is None:
+                    supply, _ = Supply.objects.get_or_create(nombre=item["nombre"])
+                SurgerySupply.objects.create(
+                    cirugia=surgery, insumo=supply, cantidad=item["cantidad"],
+                    observaciones=item.get("observaciones") or None,
+                )
         return surgery
+
+
+class EmergencySurgerySerializer(SurgeryWriteSerializer):
+    patient = PatientInlineSerializer(required=False)
+    provisional_name = serializers.CharField(max_length=255, required=False)
+    room_id = serializers.CharField(max_length=36)
+    starts_at = serializers.DateTimeField()
+
+    def validate(self, data):
+        if ("patient" in data) == ("provisional_name" in data):
+            raise serializers.ValidationError("Indicá el paciente o un nombre provisional.")
+        return data
+
+    def save(self, **kwargs):
+        if "provisional_name" in self.validated_data:
+            self.validated_data["patient"] = {
+                "dni": f"PROV-{uuid.uuid4().hex[:15]}",
+                "nombre": self.validated_data["provisional_name"],
+            }
+        return super().save(**kwargs)
+
+    def resolve_patient(self, patient_data):
+        patient, _ = Patient.objects.get_or_create(
+            dni=patient_data["dni"], defaults={"nombre": patient_data["nombre"]},
+        )
+        return patient
 
 
 class SpecialtyCatalogSerializer(serializers.ModelSerializer):

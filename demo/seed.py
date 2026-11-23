@@ -311,8 +311,71 @@ def seed_report_demo_data() -> None:
 
 @transaction.atomic
 def reset_demo_state() -> int:
+    from surgeries.models import SurgeryCancellation
+
     Planning.objects.all().delete()
+    SurgeryCancellation.objects.all().delete()
     clear_report_validation_data()
     updated = Surgery.objects.update(estado="Pendiente", inicio=None, fin=None, sala=None)
     seed_demo_data()
+    configure_demo_chiefs()
     return updated
+
+
+def configure_demo_chiefs(apps=None, using="default"):
+    from django.apps import apps as current_apps
+
+    apps = apps or current_apps
+    user_model = apps.get_model("accounts", "User")
+    chief_model = apps.get_model("plannings", "SpecialtyChief")
+    group_model = apps.get_model("auth", "Group")
+    content_type_model = apps.get_model("contenttypes", "ContentType")
+    permission_model = apps.get_model("auth", "Permission")
+    users = user_model.objects.using(using)
+    original = users.filter(email="jefe@hospital.com", username="jefe@hospital.com").first()
+    if original is None:
+        return
+
+    content_type, _ = content_type_model.objects.using(using).get_or_create(app_label="plannings", model="planning")
+    permissions = {
+        code: permission_model.objects.using(using).get_or_create(
+            content_type=content_type, codename=code, defaults={"name": label},
+        )[0]
+        for code, label in (
+            ("can_create_planning", "Can create planning"),
+            ("can_approve_planning", "Can approve planning"),
+            ("can_edit_specialty_planning", "Can edit planning for own specialties"),
+        )
+    }
+    chief_group, _ = group_model.objects.using(using).get_or_create(name="Jefe Quirofano")
+    chief_group.permissions.add(permissions["can_approve_planning"], permissions["can_edit_specialty_planning"])
+    surgeon_group, _ = group_model.objects.using(using).get_or_create(name="Cirujano")
+    surgeon_group.permissions.remove(permissions["can_approve_planning"])
+    surgeon_group.permissions.add(permissions["can_edit_specialty_planning"])
+    admin_group = group_model.objects.using(using).filter(name="Administrador").first()
+    if admin_group:
+        admin_group.permissions.remove(permissions["can_approve_planning"])
+        admin_group.permissions.add(permissions["can_create_planning"])
+    system_group = group_model.objects.using(using).filter(name="System Admin").first()
+    if system_group:
+        account_type, _ = content_type_model.objects.using(using).get_or_create(app_label="accounts", model="user")
+        system_permission, _ = permission_model.objects.using(using).get_or_create(
+            content_type=account_type, codename="can_access_system_admin",
+            defaults={"name": "Can access system admin"},
+        )
+        system_group.permissions.add(system_permission)
+
+    for number, (specialty_id, _, _, _, _, staff_id, name) in enumerate(SPECIALTY_DEFINITIONS, start=1):
+        if number == 1:
+            user = original
+            users.filter(pk=user.pk).update(personal_id=staff_id)
+        else:
+            email = f"jefe.{number}@hospital.com"
+            user, _ = users.get_or_create(email=email, defaults={
+                "username": email, "nombre": name, "rol": "Jefe Quirofano",
+                "personal_id": staff_id, "password": original.password,
+            })
+            if user.personal_id != staff_id or user.username != email or user.rol != "Jefe Quirofano":
+                continue
+        user.groups.add(chief_group)
+        chief_model.objects.using(using).get_or_create(specialty_id=specialty_id, defaults={"user_id": user.pk})

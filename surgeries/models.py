@@ -95,7 +95,6 @@ class AnesthesiaType(models.Model):
 class Supply(models.Model):
     id = models.CharField(max_length=36, primary_key=True, default=new_uuid)
     nombre = models.CharField(max_length=180, unique=True)
-    stock = models.IntegerField(default=0)
 
 
 class Surgery(models.Model):
@@ -136,3 +135,10 @@ class SurgerySupply(models.Model):
     insumo = models.ForeignKey(Supply, on_delete=models.CASCADE, related_name="lineas_cirugia")
     cantidad = models.IntegerField()
     observaciones = models.TextField(null=True, blank=True)
+
+
+class SurgeryCancellation(models.Model):
+    surgery = models.OneToOneField(Surgery, on_delete=models.CASCADE, related_name="cancellation")
+    reason = models.TextField()
+    scheduled_start = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)

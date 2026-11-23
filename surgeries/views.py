@@ -1,10 +1,12 @@
 from django.db import transaction
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import CREATE_PLANNING_PERMISSION, has_explicit_permission
-from plannings.models import Planning
+from plannings.agenda import Conflict, audit, effective_agenda
+from plannings.models import AppliedSurgery, Planning, PlanningAuditEvent, PlanningEditLock
 from surgeries.models import (
     AnesthesiaType,
     Intervention,
@@ -12,7 +14,9 @@ from surgeries.models import (
     MedicalStaffAvailability,
     OperatingRoom,
     Specialty,
+    Supply,
     Surgery,
+    SurgeryCancellation,
 )
 from surgeries.serializers import (
     AnesthesiaTypeCatalogSerializer,
@@ -30,12 +34,23 @@ from surgeries.serializers import (
 
 def surgery_queryset():
     return Surgery.objects.select_related(
-        "paciente", "especialidad", "sala", "tipo_anestesia", "cirujano_forzado"
+        "paciente", "especialidad", "sala", "tipo_anestesia", "cirujano_forzado", "cancellation"
     ).prefetch_related("intervenciones__intervencion", "insumos__insumo")
 
 
 def has_active_planning() -> bool:
-    return Planning.objects.filter(status__in=Planning.ACTIVE_STATUSES).exists()
+    return Planning.objects.filter(operational=True, status__in=Planning.ACTIVE_STATUSES).exists()
+
+
+def ensure_not_in_review(surgery_id):
+    relevant = Planning.objects.filter(operational=True, status__in=Planning.ACTIVE_STATUSES)
+    for planning in relevant.select_related("current_version"):
+        if planning.status == Planning.STATUS_PLANNING:
+            blocked = surgery_id in planning.input_payload.get("id_maps", {}).get("surgeries", {})
+        else:
+            blocked = surgery_id in (planning.current_version.assignments if planning.current_version else {})
+        if blocked:
+            raise Conflict("La cirugía forma parte de una generación o revisión activa.")
 
 
 def require_surgery_management_permission(request):
@@ -50,12 +65,6 @@ class SurgeryListView(APIView):
     def post(self, request):
         if not require_surgery_management_permission(request):
             return Response({"detail": "No tiene permiso para gestionar cirugías"}, status=status.HTTP_403_FORBIDDEN)
-        if has_active_planning():
-            return Response(
-                {"detail": "No se pueden modificar cirugías mientras hay una planificación activa"},
-                status=status.HTTP_409_CONFLICT,
-            )
-
         serializer = SurgeryWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         surgery = serializer.save()
@@ -76,17 +85,12 @@ class SurgeryDetailView(APIView):
     def patch(self, request, surgery_id: str):
         if not require_surgery_management_permission(request):
             return Response({"detail": "No tiene permiso para gestionar cirugías"}, status=status.HTTP_403_FORBIDDEN)
-        if has_active_planning():
-            return Response(
-                {"detail": "No se pueden modificar cirugías mientras hay una planificación activa"},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        surgery = Surgery.objects.filter(id=surgery_id).first()
+        surgery = Surgery.objects.select_for_update().filter(id=surgery_id).first()
         if surgery is None:
             return Response({"detail": "Surgery not found"}, status=status.HTTP_404_NOT_FOUND)
         if surgery.estado != "Pendiente":
             return Response({"detail": "Solo se pueden editar cirugías pendientes"}, status=status.HTTP_400_BAD_REQUEST)
+        ensure_not_in_review(surgery_id)
 
         serializer = SurgeryWriteSerializer(instance=surgery, data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -99,18 +103,30 @@ class SurgeryCancelView(APIView):
     def post(self, request, surgery_id: str):
         if not require_surgery_management_permission(request):
             return Response({"detail": "No tiene permiso para gestionar cirugías"}, status=status.HTTP_403_FORBIDDEN)
-        if has_active_planning():
-            return Response(
-                {"detail": "No se pueden modificar cirugías mientras hay una planificación activa"},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        surgery = Surgery.objects.filter(id=surgery_id).first()
+        reason = request.data.get("reason")
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+            raise ValidationError({"detail": "Indicá el motivo de la cancelación."})
+        planning_id = AppliedSurgery.objects.filter(surgery_id=surgery_id).values_list("planning_id", flat=True).first()
+        planning = Planning.objects.select_for_update().filter(pk=planning_id).first() if planning_id else None
+        if planning and PlanningEditLock.objects.filter(planning=planning).exists():
+            raise Conflict("La agenda de la cirugía está en edición.")
+        surgery = Surgery.objects.select_for_update().filter(id=surgery_id).first()
+        if AppliedSurgery.objects.filter(surgery_id=surgery_id).exclude(planning_id=planning_id).exists():
+            raise Conflict("La asignación cambió. Volvé a cargar la cirugía.")
         if surgery is None:
             return Response({"detail": "Surgery not found"}, status=status.HTTP_404_NOT_FOUND)
         if surgery.estado not in {"Pendiente", "Programada"}:
             return Response({"detail": "Solo se pueden cancelar cirugías pendientes o programadas"}, status=status.HTTP_400_BAD_REQUEST)
+        ensure_not_in_review(surgery_id)
 
+        SurgeryCancellation.objects.create(surgery=surgery, reason=reason.strip(), scheduled_start=surgery.inicio)
+        if planning:
+            audit(
+                planning, PlanningAuditEvent.Action.SURGERY_CANCELLED, "Cirugía cancelada",
+                actor=request.user, surgery=surgery,
+                metadata={"reason": reason.strip(), "before": effective_agenda(planning).get(surgery_id), "after": None},
+            )
+            AppliedSurgery.objects.filter(planning=planning, surgery=surgery).delete()
         surgery.estado = "Cancelada"
         surgery.inicio = None
         surgery.fin = None
@@ -186,5 +202,6 @@ class SurgeryCatalogsView(APIView):
                     .order_by("nombre"),
                     many=True,
                 ).data,
+                "supplies": list(Supply.objects.order_by("nombre").values("id", "nombre")),
             }
         )
